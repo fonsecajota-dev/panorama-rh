@@ -433,6 +433,7 @@ def run_dashboard():
                                     "usuario": usuario_logado.get('nome', 'Usuário do Sistema'),
                                     "texto": linha['Anotação']
                                 })
+                            conn.commit()
                         st.success(f"{len(alteracoes)} anotações foram salvas/atualizadas!")
                         st.cache_data.clear()
                         del st.session_state.df_anotacao_original
