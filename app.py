@@ -18,13 +18,6 @@ st.set_page_config(
     page_icon="👥",
     layout="wide"
 )
-try:
-    locale.setlocale(locale.LC_TIME, 'pt_BR.UTF-8')
-except locale.Error:
-    try:
-        locale.setlocale(locale.LC_TIME, 'Portuguese_Brazil.1252')
-    except locale.Error:
-        st.caption("Aviso: Locale pt_BR não disponível.")
 
 # --- Conexão com Banco de Dados ---
 try:
