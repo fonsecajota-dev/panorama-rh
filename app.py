@@ -12,7 +12,6 @@ import locale
 # ==============================================================================
 # 1. CONFIGURAÇÃO DA PÁGINA E AUTENTICAÇÃO
 # ==============================================================================
-
 st.set_page_config(
     page_title="Recursos Humanos - NT Transportes",
     page_icon="👥",
@@ -59,10 +58,105 @@ def logout():
         del st.session_state['user']
     st.rerun()
 
+# ==============================================================================
+# CONFIGURAÇÃO DE FUNÇÕES AUXILIARES
+# ==============================================================================
 @st.cache_data
 def converte_df_para_csv(df):
     return df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
 
+@st.cache_data
+def converter_hora_para_decimal(tempo_str):
+    if pd.isna(tempo_str) or tempo_str in ['00:00:00', '']: return 0.0
+    try:
+        partes = str(tempo_str).split(':')
+        horas = int(partes[0]); minutos = int(partes[1]); segundos = int(partes[2]) if len(partes) > 2 else 0
+        return horas + (minutos / 60) + (segundos / 3600)
+    except (ValueError, IndexError): return 0.0
+
+@st.cache_data(ttl=300)
+def carregar_e_preparar_dados(_gs_client, nome_planilha, _engine):
+    try:
+        planilha = _gs_client.open(nome_planilha)
+        nomes_abas_filiais = ['VAL', 'RIB', 'MAR', 'JAC', 'GRU']
+        lista_dfs_horas = []
+        for nome_aba in nomes_abas_filiais:
+            aba = planilha.worksheet(nome_aba)
+            registros = aba.get_all_records(head=1)
+            if not registros: continue
+            df_temp = pd.DataFrame(registros)
+            df_temp['filial'] = nome_aba
+            lista_dfs_horas.append(df_temp)
+
+        if not lista_dfs_horas:
+            st.warning("Nenhuma aba de filial com dados foi encontrada.")
+            return pd.DataFrame()
+        
+        df_horas = pd.concat(lista_dfs_horas, ignore_index=True)
+        aba_operacao = planilha.worksheet('OPERACAO')
+        df_operacao = pd.DataFrame(aba_operacao.get_all_records(head=1))
+        
+        df_horas.columns = [str(col).strip().lower() for col in df_horas.columns]
+        df_operacao.columns = [str(col).strip().lower() for col in df_operacao.columns]
+        
+        mapeamento_nomes = {
+            'colaborador': 'nome', 'função': 'funcao', 'salario base': 'salario_base',
+            'qtd he 50%': 'qtd_he_50%', 'qtd he 100%': 'qtd_he_100%',
+            'valor he 50%': 'valor_he_50%', 'valor he 100%': 'valor_he_100%', 'valor total': 'valor_total'
+        }
+        df_horas.rename(columns=mapeamento_nomes, inplace=True)
+        df_operacao.rename(columns={'função': 'funcao'}, inplace=True)
+        
+        df_horas['nome'] = df_horas['nome'].astype(str).str.strip().str.upper()
+        df_operacao['nome'] = df_operacao['nome'].astype(str).str.strip().str.upper()
+        df_horas['qtd_he_50%_dec'] = df_horas['qtd_he_50%'].apply(converter_hora_para_decimal)
+        df_horas['qtd_he_100%_dec'] = df_horas['qtd_he_100%'].apply(converter_hora_para_decimal)
+        
+        colunas_valor = ['valor_he_50%', 'valor_he_100%', 'valor_total']
+        for col in colunas_valor:
+            if col in df_horas.columns:
+                df_horas[col] = df_horas[col].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.strip()
+                df_horas[col] = pd.to_numeric(df_horas[col], errors='coerce').fillna(0)
+        
+        df_horas['data'] = pd.to_datetime(df_horas['data'], errors='coerce', dayfirst=True)
+        df_horas.dropna(subset=['data', 'nome'], inplace=True)
+        
+        df_completo = pd.merge(df_horas, df_operacao[['nome', 'cargo']], on='nome', how='left')
+
+        df_completo['cargo'] = df_completo['cargo'].fillna('Não Classificado')
+        df_completo['id_registro_original'] = df_completo['nome'].astype(str) + '_' + df_completo['data'].dt.strftime('%Y-%m-%d')
+        
+        if _engine:
+            try:
+                from sqlalchemy import text
+                query_anotacoes = text("SELECT id_registro_original, texto_anotacao, nome_usuario FROM anotacoes")
+                
+                with _engine.connect() as conn:
+                    result_anotacoes = conn.execute(query_anotacoes)
+                    df_anotacoes = pd.DataFrame(result_anotacoes.fetchall(), columns=result_anotacoes.keys())
+
+                if not df_anotacoes.empty:
+                    df_completo = pd.merge(df_completo, df_anotacoes, on='id_registro_original', how='left')
+                else:
+                    df_completo['texto_anotacao'] = ''
+                    df_completo['nome_usuario'] = None 
+            except Exception as e:
+                st.error(f"Erro detalhado ao buscar anotações: {e}")
+                df_completo['texto_anotacao'] = ''
+                df_completo['nome_usuario'] = None
+        else:
+            df_completo['texto_anotacao'] = ''
+            df_completo['nome_usuario'] = None
+
+        df_completo['texto_anotacao'] = df_completo['texto_anotacao'].fillna('')
+        df_completo['nome_usuario'] = df_completo['nome_usuario'].fillna('')
+        
+        df_completo = df_completo.loc[:, ~df_completo.columns.duplicated()]
+        return df_completo
+    except Exception as e:
+        st.error(f"Ocorreu um erro crítico ao processar os dados da planilha: {e}")
+        return pd.DataFrame()
+    
 def format_BRL(valor):
     """Formata um valor numérico para o padrão de moeda brasileiro (R$)."""
     try:
@@ -90,104 +184,13 @@ def run_dashboard():
             st.error(f"Falha na autenticação com o Google Sheets: {e}")
             return None
 
-    def converter_hora_para_decimal(tempo_str):
-        if pd.isna(tempo_str) or tempo_str in ['00:00:00', '']: return 0.0
-        try:
-            partes = str(tempo_str).split(':')
-            horas = int(partes[0]); minutos = int(partes[1]); segundos = int(partes[2]) if len(partes) > 2 else 0
-            return horas + (minutos / 60) + (segundos / 3600)
-        except (ValueError, IndexError): return 0.0
-
-    @st.cache_data(ttl=300)
-    def carregar_e_preparar_dados(_gs_client, nome_planilha):
-        try:
-            planilha = _gs_client.open(nome_planilha)
-            nomes_abas_filiais = ['VAL', 'RIB', 'MAR', 'JAC', 'GRU']
-            lista_dfs_horas = []
-            for nome_aba in nomes_abas_filiais:
-                aba = planilha.worksheet(nome_aba)
-                registros = aba.get_all_records(head=1)
-                if not registros: continue
-                df_temp = pd.DataFrame(registros)
-                df_temp['filial'] = nome_aba
-                lista_dfs_horas.append(df_temp)
-
-            if not lista_dfs_horas:
-                st.warning("Nenhuma aba de filial com dados foi encontrada.")
-                return pd.DataFrame()
-            
-            df_horas = pd.concat(lista_dfs_horas, ignore_index=True)
-            aba_operacao = planilha.worksheet('OPERACAO')
-            df_operacao = pd.DataFrame(aba_operacao.get_all_records(head=1))
-            
-            df_horas.columns = [str(col).strip().lower() for col in df_horas.columns]
-            df_operacao.columns = [str(col).strip().lower() for col in df_operacao.columns]
-            
-            mapeamento_nomes = {
-                'colaborador': 'nome', 'função': 'funcao', 'salario base': 'salario_base',
-                'qtd he 50%': 'qtd_he_50%', 'qtd he 100%': 'qtd_he_100%',
-                'valor he 50%': 'valor_he_50%', 'valor he 100%': 'valor_he_100%', 'valor total': 'valor_total'
-            }
-            df_horas.rename(columns=mapeamento_nomes, inplace=True)
-            df_operacao.rename(columns={'função': 'funcao'}, inplace=True)
-            
-            df_horas['nome'] = df_horas['nome'].astype(str).str.strip().str.upper()
-            df_operacao['nome'] = df_operacao['nome'].astype(str).str.strip().str.upper()
-            df_horas['qtd_he_50%_dec'] = df_horas['qtd_he_50%'].apply(converter_hora_para_decimal)
-            df_horas['qtd_he_100%_dec'] = df_horas['qtd_he_100%'].apply(converter_hora_para_decimal)
-            
-            colunas_valor = ['valor_he_50%', 'valor_he_100%', 'valor_total']
-            for col in colunas_valor:
-                if col in df_horas.columns:
-                    df_horas[col] = df_horas[col].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.strip()
-                    df_horas[col] = pd.to_numeric(df_horas[col], errors='coerce').fillna(0)
-            
-            df_horas['data'] = pd.to_datetime(df_horas['data'], errors='coerce', dayfirst=True)
-            df_horas.dropna(subset=['data', 'nome'], inplace=True)
-            
-            df_completo = pd.merge(df_horas, df_operacao[['nome', 'cargo']], on='nome', how='left')
-
-            df_completo['cargo'] = df_completo['cargo'].fillna('Não Classificado')
-            df_completo['id_registro_original'] = df_completo['nome'].astype(str) + '_' + df_completo['data'].dt.strftime('%Y-%m-%d')
-            
-            if engine:
-                try:
-                    from sqlalchemy import text
-                    query_anotacoes = text("SELECT id_registro_original, texto_anotacao, nome_usuario FROM anotacoes")
-                    
-                    with engine.connect() as conn:
-                        result_anotacoes = conn.execute(query_anotacoes)
-                        df_anotacoes = pd.DataFrame(result_anotacoes.fetchall(), columns=result_anotacoes.keys())
-
-                    if not df_anotacoes.empty:
-                        df_completo = pd.merge(df_completo, df_anotacoes, on='id_registro_original', how='left')
-                    else:
-                        df_completo['texto_anotacao'] = ''
-                        df_completo['nome_usuario'] = None 
-                except Exception as e:
-                    st.error(f"Erro detalhado ao buscar anotações: {e}")
-                    df_completo['texto_anotacao'] = ''
-                    df_completo['nome_usuario'] = None
-            else:
-                df_completo['texto_anotacao'] = ''
-                df_completo['nome_usuario'] = None
-
-            df_completo['texto_anotacao'] = df_completo['texto_anotacao'].fillna('')
-            df_completo['nome_usuario'] = df_completo['nome_usuario'].fillna('')
-            
-            df_completo = df_completo.loc[:, ~df_completo.columns.duplicated()]
-            return df_completo
-        except Exception as e:
-            st.error(f"Ocorreu um erro crítico ao processar os dados da planilha: {e}")
-            return pd.DataFrame()
-
     # --- Interface Principal do Dashboard ---
     gs_client = autenticar_google_sheets()
     if not gs_client:
         st.stop()
 
     with st.spinner("Carregando e processando dados..."):
-        df = carregar_e_preparar_dados(gs_client, NOME_DA_PLANILHA)
+        df = carregar_e_preparar_dados(gs_client, NOME_DA_PLANILHA, engine)
 
     if df.empty:
         st.warning("Não há dados válidos para exibir.")
