@@ -74,7 +74,7 @@ def converter_hora_para_decimal(tempo_str):
         return horas + (minutos / 60) + (segundos / 3600)
     except (ValueError, IndexError): return 0.0
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def carregar_e_preparar_dados(_gs_client, nome_planilha, _engine):
     try:
         planilha = _gs_client.open(nome_planilha)
