@@ -232,7 +232,7 @@ def run_dashboard():
         df_periodo = df[(df['data'] >= data_inicio) & (df['data'] <= data_fim)].copy()
         info_periodo = f"Período de **{data_inicio.strftime('%d/%m/%Y')}** a **{data_fim.strftime('%d/%m/%Y')}**."
 
-    mapa_filiais = {'Guarulhos': 'Guarulhos', 'Valinhos': 'Valinhos', 'Ribeirao': 'Ribeirão Preto', 'Marilia': 'Marília', 'Jacarei': 'Jacareí'}
+    mapa_filiais = {'Guarulhos': 'Guarulhos', 'Valinhos': 'Valinhos', 'Ribeirao': 'Ribeirão Preto', 'Marilia': 'Marília', 'Jacareí': 'Jacareí'}
     filiais_disponiveis = sorted(df_periodo['filial'].unique().tolist())
     nomes_filiais_display = ['Todas'] + [mapa_filiais.get(f, f) for f in filiais_disponiveis]
     filial_selecionada_nome = st.sidebar.selectbox("**Filial**", nomes_filiais_display)
