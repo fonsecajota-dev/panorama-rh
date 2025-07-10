@@ -7,15 +7,24 @@ import streamlit as st
 import pandas as pd
 import gspread
 import bcrypt
+import locale
 
 # ==============================================================================
 # 1. CONFIGURAÇÃO DA PÁGINA E AUTENTICAÇÃO
 # ==============================================================================
+
 st.set_page_config(
     page_title="Recursos Humanos - NT Transportes",
     page_icon="👥",
     layout="wide"
 )
+try:
+    locale.setlocale(locale.LC_TIME, 'pt_BR.UTF-8')
+except locale.Error:
+    try:
+        locale.setlocale(locale.LC_TIME, 'Portuguese_Brazil.1252')
+    except locale.Error:
+        st.caption("Aviso: Locale pt_BR não disponível.")
 
 # --- Conexão com Banco de Dados ---
 try:
@@ -63,7 +72,6 @@ def converte_df_para_csv(df):
 
 def format_BRL(valor):
     """Formata um valor numérico para o padrão de moeda brasileiro (R$)."""
-    import locale
     try:
         locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
         return locale.currency(valor, grouping=True, symbol=True)
@@ -77,11 +85,6 @@ def format_BRL(valor):
 # ==============================================================================
 def run_dashboard():
     st.title("👥 Dashboard de Recursos Humanos")
-
-    if st.sidebar.button("🔄 Forçar Atualização", use_container_width=True):
-        st.cache_data.clear()
-        st.success("Cache limpo! Os dados serão recarregados do banco.")
-        st.rerun()
 
     usuario_logado = get_logged_user()
     NOME_DA_PLANILHA = "bdBANCO DE HORAS"
@@ -198,6 +201,17 @@ def run_dashboard():
         st.stop()
     
     # --- FILTROS ---
+    # Captura e exibe a data da última atualização na sidebar
+    if 'data' in df.columns and not df['data'].isnull().all():
+        ultima_atualizacao = pd.to_datetime(df['data']).max().strftime('%d/%m')
+        st.sidebar.info(f"🗓️ Atualizado até **{ultima_atualizacao}**")
+
+    # Botão para limpar cache / forçar sincronização
+    if st.sidebar.button("🔄 Forçar Sincronização", use_container_width=True):
+        st.cache_data.clear()
+        st.success("Cache limpo! Os dados serão recarregados do banco.")
+        st.rerun()
+
     st.sidebar.header("🔍 Filtros Principais")
     meses_pt = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
     anos_disponiveis = sorted(df['data'].dt.year.unique(), reverse=True)
