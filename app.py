@@ -367,9 +367,21 @@ def run_dashboard():
         # --- SEÇÃO DE ANOTAÇÕES ---
         st.markdown("---")
         st.markdown("#### 📝 Tabela de Registros e Anotações")
-        st.info("Para facilitar a anotação, filtre por um dia específico abaixo. Somente registros com custo de HE maior que zero serão exibidos.")
-        
-        data_anotacao_filtro = st.date_input("Filtrar por data para anotar:", value=date.today(), key="anotacao_filtro_data", format="DD/MM/YYYY")
+
+        # Verifica se o dataframe filtrado (que respeita a filial) não está vazio
+        df_com_valor = df_filtrado[df_filtrado['valor_total'] > 0]
+        if not df_com_valor.empty:
+            # Encontra a data do último registro para a filial/período selecionado
+            ultimo_registro_data = df_com_valor['data'].max().strftime('%d/%m/%Y')
+            
+            # Define o nome da filial para exibição na mensagem
+            nome_filial_display = filial_selecionada_nome if filial_selecionada_nome != 'Todas' else 'todas as filiais'
+            
+            # Exibe a informação usando st.caption para um texto mais sutil
+            st.caption(f"ℹ️ Último registro para **{nome_filial_display}** no período selecionado: **{ultimo_registro_data}**")
+
+        st.info("Para facilitar a inserção da anotação/justificativa, filtre por um dia específico abaixo.")        
+        data_anotacao_filtro = st.date_input("**Filtrar por data:**", value=date.today(), key="anotacao_filtro_data", format="DD/MM/YYYY")
         
         df_para_anotar = df_filtrado[
             (df_filtrado['data'].dt.date == data_anotacao_filtro) & 
@@ -377,7 +389,7 @@ def run_dashboard():
         ].copy()
 
         if df_para_anotar.empty:
-            st.warning(f"Nenhum registro com custo de HE maior que zero encontrado para a data {data_anotacao_filtro.strftime('%d/%m/%Y')} com os filtros principais selecionados.")
+            st.warning(f"Nenhum registro encontrado para a data **{data_anotacao_filtro.strftime('%d/%m/%Y')}** com os filtros principais selecionados.")
         else:
             # --- Início da Lógica de Download ---
             
