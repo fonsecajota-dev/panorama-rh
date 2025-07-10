@@ -61,6 +61,17 @@ def logout():
 def converte_df_para_csv(df):
     return df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
 
+def format_BRL(valor):
+    """Formata um valor numérico para o padrão de moeda brasileiro (R$)."""
+    import locale
+    try:
+        locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
+        return locale.currency(valor, grouping=True, symbol=True)
+    except (ValueError, TypeError, locale.Error):
+        if isinstance(valor, (int, float)):
+            return f"R$ {valor:_.2f}".replace('.', ',').replace('_', '.')
+        return "R$ 0,00"
+    
 # ==============================================================================
 # 2. LÓGICA DO DASHBOARD
 # ==============================================================================
@@ -385,6 +396,7 @@ def run_dashboard():
 
             # 4. Formata a coluna de Data
             df_para_download['Data'] = pd.to_datetime(df_para_download['Data']).dt.strftime('%d/%m/%Y')
+            df_para_download['Valor Total (R$)'] = df_para_download['Valor Total (R$)'].apply(format_BRL)
 
             # 5. Exibe o botão de download
             st.download_button(
@@ -400,6 +412,7 @@ def run_dashboard():
             df_editor_pronto = df_para_anotar.copy()
             df_editor_pronto.rename(columns={'texto_anotacao': 'Anotação', 'nome': 'Colaborador', 'data': 'Data', 'cargo': 'Cargo', 'valor_total': 'Valor Total (R$)'}, inplace=True)
             df_editor_pronto['Data'] = pd.to_datetime(df_editor_pronto['Data']).dt.strftime('%d/%m/%Y')
+            df_editor_pronto['Valor Total (R$)'] = df_editor_pronto['Valor Total (R$)'].apply(format_BRL)
             colunas_para_exibir = ['Data', 'Colaborador', 'Cargo', 'Valor Total (R$)', 'Anotação']
             
             if 'df_anotacao_original' not in st.session_state or st.session_state.df_anotacao_original.empty or pd.to_datetime(st.session_state.df_anotacao_original['data'].iloc[0]).date() != data_anotacao_filtro:
@@ -417,34 +430,54 @@ def run_dashboard():
                     df_original_dia = st.session_state.df_anotacao_original[['id_registro_original', 'nome', 'texto_anotacao']].copy()
                     df_original_dia.rename(columns={'nome': 'Colaborador'}, inplace=True)
                     df_editado_usuario = df_editado.copy()
-                    
+
                     df_comparacao = pd.merge(df_editado_usuario, df_original_dia, on='Colaborador', how='left')
                     alteracoes = df_comparacao[df_comparacao['Anotação'] != df_comparacao['texto_anotacao']].copy()
 
-                    if not alteracoes.empty and engine:
-                        with st.spinner("Salvando..."), engine.connect() as conn:
-                            for _, linha in alteracoes.iterrows():
-                                query = text("""
-                                    INSERT INTO anotacoes (id_registro_original, nome_usuario, texto_anotacao) VALUES (:id, :usuario, :texto)
-                                    ON CONFLICT (id_registro_original) DO UPDATE SET texto_anotacao = EXCLUDED.texto_anotacao, nome_usuario = EXCLUDED.nome_usuario, data_modificacao = NOW();
-                                """)
-                                conn.execute(query, {
-                                    "id": linha['id_registro_original'],
-                                    "usuario": usuario_logado.get('nome', 'Usuário do Sistema'),
-                                    "texto": linha['Anotação']
-                                })
-                            conn.commit()
-                        st.success(f"{len(alteracoes)} anotações foram salvas/atualizadas!")
+                    registros_para_deletar = alteracoes[alteracoes['Anotação'].str.strip() == '']
+                    registros_para_upsert = alteracoes[alteracoes['Anotação'].str.strip() != '']
+
+                    if not registros_para_deletar.empty or not registros_para_upsert.empty:
+                        with st.spinner("Salvando alterações..."), engine.begin() as conn:
+                            # 1. Deleta os registros que ficaram em branco
+                            if not registros_para_deletar.empty:
+                                for _, linha in registros_para_deletar.iterrows():
+                                    query_delete = text("DELETE FROM anotacoes WHERE id_registro_original = :id")
+                                    conn.execute(query_delete, {"id": linha['id_registro_original']})
+
+                            # 2. Insere ou atualiza os registros com conteúdo
+                            if not registros_para_upsert.empty:
+                                for _, linha in registros_para_upsert.iterrows():
+                                    query_upsert = text("""
+                                        INSERT INTO anotacoes (id_registro_original, nome_usuario, texto_anotacao) VALUES (:id, :usuario, :texto)
+                                        ON CONFLICT (id_registro_original) DO UPDATE SET texto_anotacao = EXCLUDED.texto_anotacao, nome_usuario = EXCLUDED.nome_usuario, data_modificacao = NOW();
+                                    """)
+                                    conn.execute(query_upsert, {
+                                        "id": linha['id_registro_original'],
+                                        "usuario": usuario_logado.get('nome', 'Usuário do Sistema'),
+                                        "texto": linha['Anotação']
+                                    })
+
+                        # Mensagem de sucesso
+                        msg_sucesso = []
+                        if not registros_para_upsert.empty:
+                            msg_sucesso.append(f"{len(registros_para_upsert)} anotações salvas/atualizadas")
+                        if not registros_para_deletar.empty:
+                            msg_sucesso.append(f"{len(registros_para_deletar)} anotações removidas")
+                        
+                        st.success(" e ".join(msg_sucesso) + "!")
+                        
                         st.cache_data.clear()
                         del st.session_state.df_anotacao_original
                         st.rerun()
+
                     elif not alteracoes.empty and not engine:
                         st.error("Não foi possível salvar. A conexão com o banco de dados falhou.")
                     else:
                         st.info("Nenhuma alteração nas anotações foi detectada.")
                 except Exception as e:
                     st.error(f"Ocorreu um erro ao salvar as alterações: {e}")
-        
+
 # ==============================================================================
 # 3. CONTROLE DE FLUXO PRINCIPAL
 # ==============================================================================
