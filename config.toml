@@ -1,8 +1,0 @@
-[client]
-showCachedFunctions = false
-
-[runner]
-magicEnabled = false
-
-[theme]
-primaryColor = "#FF4B4B"
