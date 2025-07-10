@@ -1,0 +1,8 @@
+# requirements.txt
+streamlit
+pandas
+gspread
+sqlalchemy
+bcrypt
+plotly
+psycopg2-binary
