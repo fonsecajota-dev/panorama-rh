@@ -256,7 +256,7 @@ def run_dashboard():
         total_he_100 = df_filtrado['valor_he_100%'].sum()
         total_horas_50_dec = df_filtrado['qtd_he_50%_dec'].sum()
         total_horas_100_dec = df_filtrado['qtd_he_100%_dec'].sum()
-        total_colaboradores = df_filtrado['nome'].nunique()
+        total_colaboradores = df_filtrado[df_filtrado['valor_total'] > 0]['nome'].nunique()
 
         st.markdown(f"""
         <div style="text-align: center; background-color: #004080; color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
