@@ -500,6 +500,41 @@ def run_dashboard():
                 except Exception as e:
                     st.error(f"Ocorreu um erro ao salvar as alterações: {e}")
 
+        ### PAINEL DE DIAGNÓSTICOS
+        df_nao_classificados = df_filtrado[df_filtrado['cargo'] == 'Não Classificado'].copy()
+        if not df_nao_classificados.empty:
+
+            st.markdown("---")
+            st.markdown('#### 🚨 Painel de Diagnóstico: Colaborador Não Identificado na Aba "OPERAÇÃO"')
+            # Agrupa por nome e filial para maior detalhe
+            resumo_problemas = df_nao_classificados.groupby(['nome', 'filial']).agg(
+                Custo_Total=('valor_total', 'sum'), 
+                Ocorrencias=('nome', 'count')
+            ).reset_index().sort_values(by='Custo_Total', ascending=False)
+            
+            resumo_problemas['Custo_Total'] = resumo_problemas['Custo_Total'].apply(
+                lambda x: f"R$ {x:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+            )
+
+            resumo_problemas.rename(columns={
+                'nome': 'Colaborador',
+                'filial': 'Filial',
+                'Custo_Total': 'Custo Total Não Classificado',
+                'Ocorrencias': 'Nº de Lançamentos'
+            }, inplace=True)
+            
+            st.write("Resumo dos Nomes com Problemas de Correspondência:")
+            st.dataframe(resumo_problemas, use_container_width=True, hide_index=True)
+
+            # BOTÃO PARA DOWNLOAD .CSV
+            csv_data = converte_df_para_csv(resumo_problemas)
+            st.download_button(
+                label="📥 Baixar dados como CSV",
+                data=csv_data,
+                file_name=f"relatorio_nomes_nao_classificados_{date.today().strftime('%d-%m-%Y')}.csv",
+                mime='text/csv',
+            )
+
 # ==============================================================================
 # 3. CONTROLE DE FLUXO PRINCIPAL
 # ==============================================================================
