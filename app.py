@@ -166,7 +166,27 @@ def format_BRL(valor):
         if isinstance(valor, (int, float)):
             return f"R$ {valor:_.2f}".replace('.', ',').replace('_', '.')
         return "R$ 0,00"
-    
+
+def format_horas_decimal(horas_decimais):
+    """Converte um valor de horas decimais para o formato HHH.HHH:MMh."""
+    try:
+        if pd.isna(horas_decimais) or horas_decimais < 0.01:
+            return "0:00h"
+
+        # Separa a parte inteira (horas) da parte fracionária
+        horas_inteiras = int(horas_decimais)
+        # Converte a parte fracionária em minutos
+        minutos = int((horas_decimais - horas_inteiras) * 60)
+
+        # Formata as horas com separador de milhar brasileiro
+        horas_formatadas = f"{horas_inteiras:,}".replace(",", ".")
+        # Formata os minutos para sempre terem dois dígitos (ex: 05)
+        minutos_formatados = f"{minutos:02d}"
+
+        return f"{horas_formatadas}:{minutos_formatados}h"
+    except (ValueError, TypeError):
+        return "Inválido"
+
 # ==============================================================================
 # 2. LÓGICA DO DASHBOARD
 # ==============================================================================
@@ -261,19 +281,19 @@ def run_dashboard():
         st.markdown(f"""
         <div style="text-align: center; background-color: #004080; color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
             <p style="font-size: 1.2em; color: #d0d0d0; margin-bottom: 0;">CUSTO TOTAL COM HORAS EXTRAS</p>
-            <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{'R$ {:,.2f}'.format(total_he_geral).replace(',', 'X').replace('.', ',').replace('X', '.')}</p>
+            <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{format_BRL(total_he_geral)}</p>
         </div>
         """, unsafe_allow_html=True)
         
         kpi1, kpi2, kpi3 = st.columns(3)
-        kpi1.metric(label="**💰 Custo HE 50%**", value=f"R$ {total_he_50:,.2f}")
-        kpi2.metric(label="**💰 Custo HE 100%**", value=f"R$ {total_he_100:,.2f}")
+        kpi1.metric(label="**💰 Custo HE 50%**", value=format_BRL(total_he_50))
+        kpi2.metric(label="**💰 Custo HE 100%**", value=format_BRL(total_he_100))
         kpi3.metric(label="**👥 Colaboradores com HE**", value=f"{total_colaboradores}")
 
         kpi4, kpi5, kpi6 = st.columns(3)
-        kpi4.metric(label="**⏰ Total Horas 50%**", value=f"{total_horas_50_dec:,.2f}h")
-        kpi5.metric(label="**⏰ Total Horas 100%**", value=f"{total_horas_100_dec:,.2f}h")
-        kpi6.metric(label="**⚙️ Total Horas (50% + 100%)**", value=f"{(total_horas_50_dec + total_horas_100_dec):,.2f}h")
+        kpi4.metric(label="**⏰ Total Horas 50%**", value=format_horas_decimal(total_horas_50_dec))
+        kpi5.metric(label="**⏰ Total Horas 100%**", value=format_horas_decimal(total_horas_100_dec))
+        kpi6.metric(label="**⚙️ Total Horas (50% + 100%)**", value=format_horas_decimal(total_horas_50_dec + total_horas_100_dec))
         
         st.markdown("---")
 
@@ -284,6 +304,7 @@ def run_dashboard():
         with col_graf1:
             st.subheader("Custo de HE por Cargo")
             custo_por_cargo = df_filtrado.groupby('cargo')['valor_total'].sum().sort_values(ascending=False).reset_index()
+            custo_por_cargo['valor_formatado'] = custo_por_cargo['valor_total'].apply(format_BRL)
 
             fig_bar = px.bar(
                 custo_por_cargo,
@@ -292,7 +313,8 @@ def run_dashboard():
                 title='Custo Total de Horas Extras por Cargo',
                 labels={'cargo': 'Cargo', 'valor_total': 'Custo Total (R$)'},
                 text_auto='.2s',
-                color_discrete_sequence=px.colors.qualitative.Plotly  # Paleta de cores profissional
+                color_discrete_sequence=px.colors.qualitative.Plotly,  # Paleta de cores profissional
+                text='valor_formatado'
             )
 
             # --- Aprimoramentos do Layout e Tooltip ---
@@ -308,7 +330,7 @@ def run_dashboard():
             fig_bar.update_traces(
                 textposition='outside',
                 # Personaliza o que aparece ao passar o mouse
-                hovertemplate='<b>Cargo:</b> %{x}<br><b>Custo Total:</b> R$ %{y:,.2f}<extra></extra>'
+                hovertemplate='<b>Cargo:</b> %{x}<br><b>Custo Total:</b> %{text}<extra></extra>'
             )
             st.plotly_chart(fig_bar, use_container_width=True)
 
@@ -332,7 +354,7 @@ def run_dashboard():
                 hover_text = f"<b>Data: {row['data'].strftime('%d/%m/%Y')}</b><br>--------------------<br>"
                 
                 for filial in df_pivot.columns[1:]: # Pula a coluna 'data'
-                    valor_formatado = f"R$ {row[filial]:,.2f}"
+                    valor_formatado = format_BRL(row[filial])
                     hover_text += f"<b>{filial}:</b> {valor_formatado}<br>"
                 
                 tooltip_texts.append(hover_text)
@@ -398,7 +420,7 @@ def run_dashboard():
             
             # 1. Prepara o DataFrame para download a partir dos dados já filtrados
             df_para_download = df_para_anotar[[
-                'data', 'nome', 'cargo', 'valor_total', 'texto_anotacao', 'nome_usuario'
+                'data', 'nome', 'cargo', 'qtd_he_50%', 'qtd_he_100%', 'valor_total', 'texto_anotacao', 'nome_usuario'
             ]].copy()
             
             # 2. Renomeia as colunas para o formato final do relatório
@@ -406,6 +428,8 @@ def run_dashboard():
                 'data': 'Data',
                 'nome': 'Colaborador',
                 'cargo': 'Cargo',
+                'qtd_he_50%': 'HE 50%',
+                'qtd_he_100%': 'HE 100%',
                 'valor_total': 'Valor Total (R$)',
                 'texto_anotacao': 'Anotação',
                 'nome_usuario': 'Usuario Responsavel'
@@ -413,7 +437,7 @@ def run_dashboard():
             
             # 3. Garante a ordem exata das colunas
             df_para_download = df_para_download[[
-                'Data', 'Colaborador', 'Cargo', 'Valor Total (R$)', 'Anotação', 'Usuario Responsavel'
+                'Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)', 'Anotação', 'Usuario Responsavel'
             ]]
 
             # 4. Formata a coluna de Data
@@ -432,11 +456,19 @@ def run_dashboard():
 
             # O restante do código para exibir e editar a tabela continua o mesmo
             df_editor_pronto = df_para_anotar.copy()
-            df_editor_pronto.rename(columns={'texto_anotacao': 'Anotação', 'nome': 'Colaborador', 'data': 'Data', 'cargo': 'Cargo', 'valor_total': 'Valor Total (R$)'}, inplace=True)
+            df_editor_pronto.rename(columns={
+                'texto_anotacao': 'Anotação',
+                'nome': 'Colaborador',
+                'data': 'Data',
+                'qtd_he_50%': 'HE 50%',
+                'qtd_he_100%': 'HE 100%',
+                'cargo': 'Cargo',
+                'valor_total': 'Valor Total (R$)'
+            }, inplace=True)
             df_editor_pronto['Data'] = pd.to_datetime(df_editor_pronto['Data']).dt.strftime('%d/%m/%Y')
             df_editor_pronto['Valor Total (R$)'] = df_editor_pronto['Valor Total (R$)'].apply(format_BRL)
-            colunas_para_exibir = ['Data', 'Colaborador', 'Cargo', 'Valor Total (R$)', 'Anotação']
-            
+            colunas_para_exibir = ['Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)', 'Anotação']
+
             if 'df_anotacao_original' not in st.session_state or st.session_state.df_anotacao_original.empty or pd.to_datetime(st.session_state.df_anotacao_original['data'].iloc[0]).date() != data_anotacao_filtro:
                 st.session_state.df_anotacao_original = df_para_anotar.copy()
 
