@@ -77,6 +77,7 @@ def converter_hora_para_decimal(tempo_str):
 @st.cache_data(ttl=300, show_spinner=False)
 def carregar_e_preparar_dados(_gs_client, nome_planilha, _engine):
     try:
+        # --- Lógica existente para carregar dados da planilha (sem alterações) ---
         planilha = _gs_client.open(nome_planilha)
         nomes_abas_filiais = ['VAL', 'RIB', 'MAR', 'JAC', 'GRU']
         lista_dfs_horas = []
@@ -90,7 +91,7 @@ def carregar_e_preparar_dados(_gs_client, nome_planilha, _engine):
 
         if not lista_dfs_horas:
             st.warning("Nenhuma aba de filial com dados foi encontrada.")
-            return pd.DataFrame()
+            return pd.DataFrame(), pd.DataFrame() # Retorna dois DFs vazios
         
         df_horas = pd.concat(lista_dfs_horas, ignore_index=True)
         aba_operacao = planilha.worksheet('OPERACAO')
@@ -126,14 +127,34 @@ def carregar_e_preparar_dados(_gs_client, nome_planilha, _engine):
         df_completo['cargo'] = df_completo['cargo'].fillna('Não Classificado')
         df_completo['id_registro_original'] = df_completo['nome'].astype(str) + '_' + df_completo['data'].dt.strftime('%Y-%m-%d')
         
+        df_anotacoes = pd.DataFrame()
+        df_contratacoes_pendentes = pd.DataFrame() # DataFrame para o novo KPI
+
         if _engine:
             try:
                 from sqlalchemy import text
-                query_anotacoes = text("SELECT id_registro_original, texto_anotacao, nome_usuario FROM anotacoes")
                 
                 with _engine.connect() as conn:
+                    # Query para anotações
+                    query_anotacoes = text("SELECT id_registro_original, texto_anotacao, nome_usuario FROM anotacoes")
                     result_anotacoes = conn.execute(query_anotacoes)
                     df_anotacoes = pd.DataFrame(result_anotacoes.fetchall(), columns=result_anotacoes.keys())
+
+                    # --- Buscar contratações pendentes mais recentes por filial ---
+                    query_contratacoes = text("""
+                        WITH RankedRH AS (
+                            SELECT
+                                filial_descricao,
+                                contratacoes_pendentes,
+                                ROW_NUMBER() OVER(PARTITION BY filial_descricao ORDER BY data_registro DESC, id DESC) as rn
+                            FROM rh_duplicate
+                        )
+                        SELECT filial_descricao, contratacoes_pendentes
+                        FROM RankedRH
+                        WHERE rn = 1;
+                    """)
+                    result_contratacoes = conn.execute(query_contratacoes)
+                    df_contratacoes_pendentes = pd.DataFrame(result_contratacoes.fetchall(), columns=result_contratacoes.keys())
 
                 if not df_anotacoes.empty:
                     df_completo = pd.merge(df_completo, df_anotacoes, on='id_registro_original', how='left')
@@ -141,7 +162,7 @@ def carregar_e_preparar_dados(_gs_client, nome_planilha, _engine):
                     df_completo['texto_anotacao'] = ''
                     df_completo['nome_usuario'] = None 
             except Exception as e:
-                st.error(f"Erro detalhado ao buscar anotações: {e}")
+                st.error(f"Erro detalhado ao buscar dados do banco: {e}")
                 df_completo['texto_anotacao'] = ''
                 df_completo['nome_usuario'] = None
         else:
@@ -150,12 +171,13 @@ def carregar_e_preparar_dados(_gs_client, nome_planilha, _engine):
 
         df_completo['texto_anotacao'] = df_completo['texto_anotacao'].fillna('')
         df_completo['nome_usuario'] = df_completo['nome_usuario'].fillna('')
-        
         df_completo = df_completo.loc[:, ~df_completo.columns.duplicated()]
-        return df_completo
+        
+        return df_completo, df_contratacoes_pendentes
+        
     except Exception as e:
-        st.error(f"Ocorreu um erro crítico ao processar os dados da planilha: {e}")
-        return pd.DataFrame()
+        st.error(f"Ocorreu um erro crítico ao processar os dados: {e}")
+        return pd.DataFrame(), pd.DataFrame()
     
 def format_BRL(valor):
     """Formata um valor numérico para o padrão de moeda brasileiro (R$)."""
@@ -173,19 +195,39 @@ def format_horas_decimal(horas_decimais):
         if pd.isna(horas_decimais) or horas_decimais < 0.01:
             return "0:00h"
 
-        # Separa a parte inteira (horas) da parte fracionária
         horas_inteiras = int(horas_decimais)
-        # Converte a parte fracionária em minutos
         minutos = int((horas_decimais - horas_inteiras) * 60)
-
-        # Formata as horas com separador de milhar brasileiro
         horas_formatadas = f"{horas_inteiras:,}".replace(",", ".")
-        # Formata os minutos para sempre terem dois dígitos (ex: 05)
         minutos_formatados = f"{minutos:02d}"
-
         return f"{horas_formatadas}:{minutos_formatados}h"
+    
     except (ValueError, TypeError):
         return "Inválido"
+
+def exibir_kpi_secundario(label, value, icon=""):
+    """
+    Cria um card de KPI estilizado e centralizado usando HTML.
+    O card é projetado para ocupar toda a altura da coluna (height: 100%).
+    """
+    label_com_icon = f"{icon} {label}" if icon else label
+    
+    html = f"""
+    <div style="
+        background-color: #f0f2f6; 
+        border-radius: 10px; 
+        padding: 20px; 
+        text-align: center; 
+        height: 100%; 
+        display: flex; 
+        flex-direction: column; 
+        justify-content: center;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    ">
+        <p style="font-size: 1.0em; font-weight: 600; color: #555; margin: 0; padding: 0;">{label_com_icon}</p>
+        <p style="font-size: 1.8em; font-weight: bold; color: #004080; margin: 5px 0 0 0; padding: 0;">{value}</p>
+    </div>
+    """
+    return html
 
 # ==============================================================================
 # 2. LÓGICA DO DASHBOARD
@@ -210,7 +252,7 @@ def run_dashboard():
         st.stop()
 
     with st.spinner("Carregando e processando dados..."):
-        df = carregar_e_preparar_dados(gs_client, NOME_DA_PLANILHA, engine)
+        df, df_contratacoes = carregar_e_preparar_dados(gs_client, NOME_DA_PLANILHA, engine)
 
     if df.empty:
         st.warning("Não há dados válidos para exibir.")
@@ -255,7 +297,7 @@ def run_dashboard():
         df_periodo = df[(df['data'] >= data_inicio) & (df['data'] <= data_fim)].copy()
         info_periodo = f"Período de **{data_inicio.strftime('%d/%m/%Y')}** a **{data_fim.strftime('%d/%m/%Y')}**."
 
-    mapa_filiais = {'Guarulhos': 'Guarulhos', 'Valinhos': 'Valinhos', 'Ribeirao': 'Ribeirão Preto', 'Marilia': 'Marília', 'Jacareí': 'Jacareí'}
+    mapa_filiais = {'Guarulhos': 'Guarulhos', 'Valinhos': 'Valinhos', 'Ribeirao': 'Ribeirão', 'Marilia': 'Marília', 'Jacareí': 'Jacareí'}
     filiais_disponiveis = sorted(df_periodo['filial'].unique().tolist())
     nomes_filiais_display = ['Todas'] + [mapa_filiais.get(f, f) for f in filiais_disponiveis]
     filial_selecionada_nome = st.sidebar.selectbox("**Filial**", nomes_filiais_display)
@@ -276,25 +318,67 @@ def run_dashboard():
         total_he_100 = df_filtrado['valor_he_100%'].sum()
         total_horas_50_dec = df_filtrado['qtd_he_50%_dec'].sum()
         total_horas_100_dec = df_filtrado['qtd_he_100%_dec'].sum()
-        total_colaboradores = df_filtrado[df_filtrado['valor_total'] > 0]['nome'].nunique()
+        total_horas_dec = total_horas_50_dec + total_horas_100_dec
+        total_colaboradores_he = df_filtrado[df_filtrado['valor_total'] > 0]['nome'].nunique()
 
-        st.markdown(f"""
-        <div style="text-align: center; background-color: #004080; color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
-            <p style="font-size: 1.2em; color: #d0d0d0; margin-bottom: 0;">CUSTO TOTAL COM HORAS EXTRAS</p>
-            <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{format_BRL(total_he_geral)}</p>
+        # --- Lógica para calcular as contratações pendentes ---
+        total_contratacoes_pendentes = 0
+        if not df_contratacoes.empty:
+            if filial_selecionada_nome == 'Todas':
+                # Soma o valor de todas as filiais
+                total_contratacoes_pendentes = int(df_contratacoes['contratacoes_pendentes'].sum())
+            else:
+                # Busca o valor da filial específica
+                df_contratacoes_filtrado = df_contratacoes[df_contratacoes['filial_descricao'] == filial_selecionada_nome]
+                if not df_contratacoes_filtrado.empty:
+                    total_contratacoes_pendentes = int(df_contratacoes_filtrado['contratacoes_pendentes'].iloc[0])
+
+        # --- KPI PRINCIPAL ---
+        html_kpi_principal = f"""
+        <div style="display: flex; justify-content: space-around; align-items: center; background-color: #004080; color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+            <div style="text-align: center; flex-grow: 1;">
+                <p style="font-size: 1.2em; color: #d0d0d0; margin-bottom: 0;">CUSTO TOTAL COM HORAS EXTRAS</p>
+                <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{format_BRL(total_he_geral)}</p>
+            </div>
+            <div style="border-left: 2px solid #aab; height: 80px; margin: 0 20px;"></div>
+            <div style="text-align: center; flex-grow: 1;">
+                <p style="font-size: 1.2em; color: #d0d0d0; margin-bottom: 0;">QUANTIDADE TOTAL DE HORAS</p>
+                <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{format_horas_decimal(total_horas_dec)}</p>
+            </div>
+            <div style="border-left: 2px solid #aab; height: 80px; margin: 0 20px;"></div>
+            <div style="text-align: center; flex-grow: 1;">
+                <p style="font-size: 1.2em; color: #d0d0d0; margin-bottom: 0;">TOTAL COLABORADORES COM HE</p>
+                <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{(total_colaboradores_he)}</p>
+            </div>
+
         </div>
-        """, unsafe_allow_html=True)
-        
-        kpi1, kpi2, kpi3 = st.columns(3)
-        kpi1.metric(label="**💰 Custo HE 50%**", value=format_BRL(total_he_50))
-        kpi2.metric(label="**💰 Custo HE 100%**", value=format_BRL(total_he_100))
-        kpi3.metric(label="**👥 Colaboradores com HE**", value=f"{total_colaboradores}")
+        """
+        st.markdown(html_kpi_principal, unsafe_allow_html=True)
 
-        kpi4, kpi5, kpi6 = st.columns(3)
-        kpi4.metric(label="**⏰ Total Horas 50%**", value=format_horas_decimal(total_horas_50_dec))
-        kpi5.metric(label="**⏰ Total Horas 100%**", value=format_horas_decimal(total_horas_100_dec))
-        kpi6.metric(label="**⚙️ Total Horas (50% + 100%)**", value=format_horas_decimal(total_horas_50_dec + total_horas_100_dec))
-        
+        # Primeira Linha de KPIs
+        kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+        with kpi_col1:
+            st.markdown(exibir_kpi_secundario("Custo HE 50%", format_BRL(total_he_50), icon="💰"), unsafe_allow_html=True)
+        with kpi_col2:
+            st.markdown(exibir_kpi_secundario("Total Horas 50%", format_horas_decimal(total_horas_50_dec), icon="⏰"), unsafe_allow_html=True)
+        with kpi_col3:
+            st.markdown(exibir_kpi_secundario("Custo HE 100%", format_BRL(total_he_100), icon="💰"), unsafe_allow_html=True)
+        with kpi_col4:
+            st.markdown(exibir_kpi_secundario("Total Horas 100%", format_horas_decimal(total_horas_100_dec), icon="⏰"), unsafe_allow_html=True)
+        #kpi6.metric(label="**⚙️ Total Horas (50% + 100%)**", value=format_horas_decimal(total_horas_dec))
+
+        # Segunda Linha de KPIs
+        st.write("") 
+        kpi_col5, kpi_col6, kpi_col7, kpi_col8 = st.columns(4)
+        with kpi_col5:
+            st.markdown(exibir_kpi_secundario("Total de Colaboradores", f"{total_colaboradores_he}", icon="👥"), unsafe_allow_html=True)
+        with kpi_col6:
+            st.markdown(exibir_kpi_secundario("Colaboradores Ativos", "N/D", icon="🟢"), unsafe_allow_html=True)
+        with kpi_col7:
+            st.markdown(exibir_kpi_secundario("Colaboradores Inativos", "N/D", icon="🔴"), unsafe_allow_html=True)
+        with kpi_col8:
+            st.markdown(exibir_kpi_secundario("Contratações Pendentes", f"{total_contratacoes_pendentes}", icon="📝"), unsafe_allow_html=True)
+            #kpi4.metric(label="**👥 Colaboradores com HE**", value=f"{total_colaboradores}")
         st.markdown("---")
 
         # --- SEÇÃO DE GRÁFICOS ---
@@ -405,13 +489,32 @@ def run_dashboard():
             # Exibe a informação usando st.caption para um texto mais sutil
             st.caption(f"ℹ️ Último registro para **{nome_filial_display}** no período selecionado: **{ultimo_registro_data}**")
 
-        st.info("Para facilitar a inserção da anotação/justificativa, filtre por um dia específico abaixo.")        
-        data_anotacao_filtro = st.date_input("**Filtrar por data:**", value=date.today(), key="anotacao_filtro_data", format="DD/MM/YYYY")
-        
-        df_para_anotar = df_filtrado[
-            (df_filtrado['data'].dt.date == data_anotacao_filtro) & 
-            (df_filtrado['valor_total'] > 0)
-        ].copy()
+        # Filtros para a seção de anotações
+        col_filtro_data, col_filtro_check = st.columns([1.5, 3])
+        with col_filtro_data:
+            data_anotacao_filtro = st.date_input(
+                "**Filtrar por data:**", 
+                value=date.today(), 
+                key="anotacao_filtro_data", 
+                format="DD/MM/YYYY"
+            )
+        with col_filtro_data:
+            marcar_todos = st.checkbox(
+                "Exibir o período completo (ignora o filtro de data)", 
+                key="anotacao_marcar_todos_check"
+            )        
+
+        # --- LÓGICA DE FILTRAGEM CONDICIONAL ---
+        if marcar_todos:
+            # Se marcado, usa o df_filtrado que já respeita os filtros principais (ano, mês, filial)
+            df_para_anotar = df_filtrado[df_filtrado['valor_total'] > 0].copy()
+            st.info("Exibindo todos os registros para o período e filial selecionados nos filtros principais.")
+        else:
+            # Se desmarcado, aplica o filtro de data específico
+            df_para_anotar = df_filtrado[
+                (df_filtrado['data'].dt.date == data_anotacao_filtro) & 
+                (df_filtrado['valor_total'] > 0)
+            ].copy()
 
         if df_para_anotar.empty:
             st.warning(f"Nenhum registro encontrado para a data **{data_anotacao_filtro.strftime('%d/%m/%Y')}** com os filtros principais selecionados.")
@@ -432,12 +535,12 @@ def run_dashboard():
                 'qtd_he_100%': 'HE 100%',
                 'valor_total': 'Valor Total (R$)',
                 'texto_anotacao': 'Anotação',
-                'nome_usuario': 'Usuario Responsavel'
+                'nome_usuario': 'Gestor Responsavel'
             })
             
             # 3. Garante a ordem exata das colunas
             df_para_download = df_para_download[[
-                'Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)', 'Anotação', 'Usuario Responsavel'
+                'Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)', 'Anotação', 'Gestor Responsavel'
             ]]
 
             # 4. Formata a coluna de Data
