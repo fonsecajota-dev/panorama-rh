@@ -158,26 +158,22 @@ def carregar_horas_e_operacao(_gs_client, nome_planilha):
 
 @st.cache_data(ttl=300, show_spinner="Carregando quadro de colaboradores...")
 def carregar_colaboradores(_gs_client, nome_planilha):
-    """Carrega e processa apenas os dados da aba COLABORADORES."""
     try:
-        planilha = _gs_client.open(nome_planilha)
-        aba_colaboradores = planilha.worksheet('COLABORADORES')
-        registros = aba_colaboradores.get_all_records(head=1)
+        registros = _gs_client.open(nome_planilha).worksheet('COLABORADORES').get_all_records(head=1)
         if not registros: return pd.DataFrame()
-
-        df_colaboradores = pd.DataFrame(registros)
-        df_colaboradores.columns = [str(col).strip().lower() for col in df_colaboradores.columns]
-        df_colaboradores['filial'] = df_colaboradores['filial'].str.strip()
-        df_colaboradores['situação'] = df_colaboradores['situação'].str.strip().str.upper()
-        df_colaboradores['colaborador'] = df_colaboradores['colaborador'].str.strip().str.upper()
-        return df_colaboradores
-
+        df = pd.DataFrame(registros)
+        df.columns = [str(c).lower().strip() for c in df.columns]
+        # MODIFICAÇÃO: Adicionado 'função' à lista
+        for col in ['filial', 'situação', 'colaborador', 'função']:
+            if col in df.columns:
+                df[col] = df[col].str.strip()
+        df['situação'] = df['situação'].str.upper()
+        df['colaborador'] = df['colaborador'].str.upper()
+        return df
     except gspread.exceptions.WorksheetNotFound:
-        st.warning("Aba 'COLABORADORES' não encontrada. KPIs de headcount estarão indisponíveis.")
-        return pd.DataFrame()
+        st.warning("Aba 'COLABORADORES' não encontrada."); return pd.DataFrame()
     except Exception as e:
-        st.error(f"Erro ao carregar dados de Colaboradores: {e}")
-        return pd.DataFrame()
+        st.error(f"Erro ao carregar Colaboradores: {e}"); return pd.DataFrame()
 
 @st.cache_data(ttl=300, show_spinner="Buscando dados do banco...")
 def carregar_dados_banco(_engine):
@@ -213,6 +209,27 @@ def carregar_dados_banco(_engine):
 # ==============================================================================
 def run_dashboard():
     st.title("👥 Dashboard de Recursos Humanos")
+
+# --- NOVO BLOCO DE CSS PARA ESTILIZAR O EXPANDER ---
+    st.markdown("""
+    <style>
+        /* Alvo é o cabeçalho do expander (o elemento <summary>) */
+        div[data-testid="stExpander"] summary {
+            background-color: #f0f2f6;
+            border: 1px solid #e6eaf1;
+            border-radius: 10px;
+            padding: 12px;
+            font-size: 1.05em;
+            font-weight: 600;
+            color: #004080;
+            transition: background-color 0.2s ease-in-out;
+        }
+        /* Efeito hover para melhor feedback visual */
+        div[data-testid="stExpander"] summary:hover {
+            background-color: #e6eaf1;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
     usuario_logado = get_logged_user()
     NOME_DA_PLANILHA = "bdBANCO DE HORAS"
@@ -334,6 +351,7 @@ def run_dashboard():
         total_colaboradores_geral = 0
         total_colaboradores_ativos = 0
         total_colaboradores_inativos = 0
+        lista_ativos_df, lista_inativos_df = pd.DataFrame(), pd.DataFrame()
 
         if not df_colaboradores.empty:
             df_colab_filtrado = df_colaboradores.copy()
@@ -343,6 +361,8 @@ def run_dashboard():
             
             # Realiza os cálculos sobre o DataFrame (filtrado ou não)
             if not df_colab_filtrado.empty:
+                lista_ativos_df = df_colab_filtrado[df_colab_filtrado['situação'] == 'TRABALHANDO'][['colaborador', 'função', 'filial']]
+                lista_inativos_df = df_colab_filtrado[df_colab_filtrado['situação'] != 'TRABALHANDO'][['colaborador', 'função', 'filial', 'situação']]
                 total_colaboradores_ativos = df_colab_filtrado[df_colab_filtrado['situação'] == 'TRABALHANDO']['colaborador'].nunique()
                 total_colaboradores_inativos = df_colab_filtrado[df_colab_filtrado['situação'] != 'TRABALHANDO']['colaborador'].nunique()
                 total_colaboradores_geral = df_colab_filtrado['colaborador'].nunique()
@@ -371,28 +391,49 @@ def run_dashboard():
 
         # Primeira Linha de KPIs
         kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
-        with kpi_col1:
-            st.markdown(exibir_kpi_secundario("Custo HE 50%", format_BRL(total_he_50), icon="💰"), unsafe_allow_html=True)
-        with kpi_col2:
-            st.markdown(exibir_kpi_secundario("Total Horas 50%", format_horas_decimal(total_horas_50_dec), icon="⏰"), unsafe_allow_html=True)
-        with kpi_col3:
-            st.markdown(exibir_kpi_secundario("Custo HE 100%", format_BRL(total_he_100), icon="💰"), unsafe_allow_html=True)
-        with kpi_col4:
-            st.markdown(exibir_kpi_secundario("Total Horas 100%", format_horas_decimal(total_horas_100_dec), icon="⏰"), unsafe_allow_html=True)
-        #kpi6.metric(label="**⚙️ Total Horas (50% + 100%)**", value=format_horas_decimal(total_horas_dec))
+        with kpi_col1: st.markdown(exibir_kpi_secundario("Custo HE 50%", format_BRL(total_he_50), icon="💰"), unsafe_allow_html=True)
+        with kpi_col2: st.markdown(exibir_kpi_secundario("Total Horas 50%", format_horas_decimal(total_horas_50_dec), icon="⏰"), unsafe_allow_html=True)
+        with kpi_col3: st.markdown(exibir_kpi_secundario("Custo HE 100%", format_BRL(total_he_100), icon="💰"), unsafe_allow_html=True)
+        with kpi_col4: st.markdown(exibir_kpi_secundario("Total Horas 100%", format_horas_decimal(total_horas_100_dec), icon="⏰"), unsafe_allow_html=True)
 
         # Segunda Linha de KPIs
         st.write("") 
         kpi_col5, kpi_col6, kpi_col7, kpi_col8 = st.columns(4)
-        with kpi_col5:
-            st.markdown(exibir_kpi_secundario("Total de Colaboradores", f"{total_colaboradores_geral}", icon="👥"), unsafe_allow_html=True)
-        with kpi_col6:
-            st.markdown(exibir_kpi_secundario("Colaboradores Ativos", f"{total_colaboradores_ativos}", icon="🟢"), unsafe_allow_html=True)
-        with kpi_col7:
-            st.markdown(exibir_kpi_secundario("Colaboradores Inativos", f"{total_colaboradores_inativos}", icon="🔴"), unsafe_allow_html=True)
-        with kpi_col8:
-            st.markdown(exibir_kpi_secundario("Contratações Pendentes", f"{total_contratacoes_pendentes}", icon="📝"), unsafe_allow_html=True)
-            #kpi4.metric(label="**👥 Colaboradores com HE**", value=f"{total_colaboradores}")
+        with kpi_col5: st.markdown(exibir_kpi_secundario("Total de Colaboradores", f"{total_colaboradores_geral}", icon="👥"), unsafe_allow_html=True)
+        with kpi_col6: st.markdown(exibir_kpi_secundario("Colaboradores Ativos", f"{total_colaboradores_ativos}", icon="🟢"), unsafe_allow_html=True)
+        with kpi_col7: st.markdown(exibir_kpi_secundario("Colaboradores Inativos", f"{total_colaboradores_inativos}", icon="🔴"), unsafe_allow_html=True)
+        with kpi_col8: st.markdown(exibir_kpi_secundario("Contratações Pendentes", f"{total_contratacoes_pendentes}", icon="📝"), unsafe_allow_html=True)
+        st.markdown("---")
+
+        # --- SEÇÃO PARA LISTAR E EXTRAIR COLABORADORES ---
+        def formatar_df_para_exibicao(df_original):
+            if df_original.empty: return pd.DataFrame()
+            df_display = df_original.sort_values(by='colaborador').copy()
+            for col in ['colaborador', 'função', 'filial', 'situação']:
+                if col in df_display.columns:
+                    df_display[col] = df_display[col].str.title()
+
+            mapa_nomes = {'colaborador': 'Colaborador', 'função': 'Função', 'filial': 'Filial', 'situação': 'Situação'}
+            return df_display.rename(columns=mapa_nomes)
+
+        df_ativos_display = formatar_df_para_exibicao(df_colab_filtrado[df_colab_filtrado['situação'] == 'TRABALHANDO'])
+        df_inativos_display = formatar_df_para_exibicao(df_colab_filtrado[df_colab_filtrado['situação'] != 'TRABALHANDO'])
+
+        st.subheader("Relação de Colaboradores")
+        col_exp1, col_exp2 = st.columns(2)
+        with col_exp1:
+            with st.expander(f"🟢 Listar Colaboradores Ativos ({total_colaboradores_ativos})"):
+                if not df_ativos_display.empty:
+                    st.dataframe(df_ativos_display[['Colaborador', 'Função', 'Filial']], use_container_width=True, hide_index=True)
+                    st.download_button(label="📥 Baixar Lista de Ativos (.csv)", data=converte_df_para_csv(df_ativos_display), file_name=f"colaboradores_ativos.csv", mime='text/csv')
+                else: st.info("Nenhum colaborador ativo para os filtros.")
+        
+        with col_exp2:
+            with st.expander(f"🔴 Listar Colaboradores Inativos ({total_colaboradores_inativos})"):
+                if not df_inativos_display.empty:
+                    st.dataframe(df_inativos_display[['Colaborador', 'Função', 'Filial', 'Situação']], use_container_width=True, hide_index=True)
+                    st.download_button(label="📥 Baixar Lista de Inativos (.csv)", data=converte_df_para_csv(df_inativos_display), file_name=f"colaboradores_inativos.csv", mime='text/csv')
+                else: st.info("Nenhum colaborador inativo para os filtros.")
         st.markdown("---")
 
         # --- SEÇÃO DE GRÁFICOS ---
