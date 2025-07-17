@@ -1,4 +1,4 @@
-# app.py
+# app.py (Versão Otimizada)
 
 from sqlalchemy import create_engine, text
 from datetime import datetime, date
@@ -10,7 +10,7 @@ import bcrypt
 import locale
 
 # ==============================================================================
-# 1. CONFIGURAÇÃO DA PÁGINA E AUTENTICAÇÃO
+# CONFIGURAÇÃO DA PÁGINA E AUTENTICAÇÃO
 # ==============================================================================
 st.set_page_config(
     page_title="Recursos Humanos - NT Transportes",
@@ -59,7 +59,7 @@ def logout():
     st.rerun()
 
 # ==============================================================================
-# CONFIGURAÇÃO DE FUNÇÕES AUXILIARES
+# CONFIGURAÇÃO DE FUNÇÕES AUXILIARES E DE CARREGAMENTO MODULAR
 # ==============================================================================
 @st.cache_data
 def converte_df_para_csv(df):
@@ -74,10 +74,42 @@ def converter_hora_para_decimal(tempo_str):
         return horas + (minutos / 60) + (segundos / 3600)
     except (ValueError, IndexError): return 0.0
 
-@st.cache_data(ttl=300, show_spinner=False)
-def carregar_e_preparar_dados(_gs_client, nome_planilha, _engine):
+def format_BRL(valor):
     try:
-        # --- Lógica existente para carregar dados da planilha (sem alterações) ---
+        locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
+        return locale.currency(valor, grouping=True, symbol=True)
+    except (ValueError, TypeError, locale.Error):
+        if isinstance(valor, (int, float)):
+            return f"R$ {valor:_.2f}".replace('.', ',').replace('_', '.')
+        return "R$ 0,00"
+
+def format_horas_decimal(horas_decimais):
+    try:
+        if pd.isna(horas_decimais) or horas_decimais < 0.01: return "0:00h"
+        horas_inteiras = int(horas_decimais)
+        minutos = int((horas_decimais - horas_inteiras) * 60)
+        horas_formatadas = f"{horas_inteiras:,}".replace(",", ".")
+        minutos_formatados = f"{minutos:02d}"
+        return f"{horas_formatadas}:{minutos_formatados}h"
+    except (ValueError, TypeError): return "Inválido"
+
+def exibir_kpi_secundario(label, value, icon=""):
+    label_com_icon = f"{icon} {label}" if icon else label
+    html = f"""
+    <div style="background-color: #f0f2f6; border-radius: 10px; padding: 20px; text-align: center; height: 100%; display: flex; flex-direction: column; justify-content: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+        <p style="font-size: 1.0em; font-weight: 600; color: #555; margin: 0; padding: 0;">{label_com_icon}</p>
+        <p style="font-size: 1.8em; font-weight: bold; color: #004080; margin: 5px 0 0 0; padding: 0;">{value}</p>
+    </div>
+    """
+    return html
+
+# ==============================================================================
+# FUNÇÕES DE CARREGAMENTO MODULAR
+# ==============================================================================
+@st.cache_data(ttl=300, show_spinner="Carregando dados de horas extras...")
+def carregar_horas_e_operacao(_gs_client, nome_planilha):
+    """Carrega e processa apenas os dados de Horas Extras e Operação."""
+    try:
         planilha = _gs_client.open(nome_planilha)
         nomes_abas_filiais = ['VAL', 'RIB', 'MAR', 'JAC', 'GRU']
         lista_dfs_horas = []
@@ -89,148 +121,95 @@ def carregar_e_preparar_dados(_gs_client, nome_planilha, _engine):
             df_temp['filial'] = nome_aba
             lista_dfs_horas.append(df_temp)
 
-        if not lista_dfs_horas:
-            st.warning("Nenhuma aba de filial com dados foi encontrada.")
-            return pd.DataFrame(), pd.DataFrame() # Retorna dois DFs vazios
+        if not lista_dfs_horas: return pd.DataFrame()
         
         df_horas = pd.concat(lista_dfs_horas, ignore_index=True)
         aba_operacao = planilha.worksheet('OPERACAO')
         df_operacao = pd.DataFrame(aba_operacao.get_all_records(head=1))
-        
+
+        # Limpeza e transformação
         df_horas.columns = [str(col).strip().lower() for col in df_horas.columns]
         df_operacao.columns = [str(col).strip().lower() for col in df_operacao.columns]
         
-        mapeamento_nomes = {
-            'colaborador': 'nome', 'função': 'funcao', 'salario base': 'salario_base',
-            'qtd he 50%': 'qtd_he_50%', 'qtd he 100%': 'qtd_he_100%',
-            'valor he 50%': 'valor_he_50%', 'valor he 100%': 'valor_he_100%', 'valor total': 'valor_total'
-        }
-        df_horas.rename(columns=mapeamento_nomes, inplace=True)
+        mapeamento = {'colaborador': 'nome', 'função': 'funcao', 'salario base': 'salario_base', 'qtd he 50%': 'qtd_he_50%', 'qtd he 100%': 'qtd_he_100%', 'valor he 50%': 'valor_he_50%', 'valor he 100%': 'valor_he_100%', 'valor total': 'valor_total'}
+        df_horas.rename(columns=mapeamento, inplace=True)
         df_operacao.rename(columns={'função': 'funcao'}, inplace=True)
         
         df_horas['nome'] = df_horas['nome'].astype(str).str.strip().str.upper()
         df_operacao['nome'] = df_operacao['nome'].astype(str).str.strip().str.upper()
-        df_horas['qtd_he_50%_dec'] = df_horas['qtd_he_50%'].apply(converter_hora_para_decimal)
-        df_horas['qtd_he_100%_dec'] = df_horas['qtd_he_100%'].apply(converter_hora_para_decimal)
-        
+
         colunas_valor = ['valor_he_50%', 'valor_he_100%', 'valor_total']
         for col in colunas_valor:
             if col in df_horas.columns:
                 df_horas[col] = df_horas[col].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.strip()
                 df_horas[col] = pd.to_numeric(df_horas[col], errors='coerce').fillna(0)
-        
+
         df_horas['data'] = pd.to_datetime(df_horas['data'], errors='coerce', dayfirst=True)
         df_horas.dropna(subset=['data', 'nome'], inplace=True)
         
         df_completo = pd.merge(df_horas, df_operacao[['nome', 'cargo']], on='nome', how='left')
-
         df_completo['cargo'] = df_completo['cargo'].fillna('Não Classificado')
-        df_completo['id_registro_original'] = df_completo['nome'].astype(str) + '_' + df_completo['data'].dt.strftime('%Y-%m-%d')
-        
-        df_anotacoes = pd.DataFrame()
-        df_contratacoes_pendentes = pd.DataFrame() # DataFrame para o novo KPI
 
-        if _engine:
-            try:
-                from sqlalchemy import text
-                
-                with _engine.connect() as conn:
-                    # Query para anotações
-                    query_anotacoes = text("SELECT id_registro_original, texto_anotacao, nome_usuario FROM anotacoes")
-                    result_anotacoes = conn.execute(query_anotacoes)
-                    df_anotacoes = pd.DataFrame(result_anotacoes.fetchall(), columns=result_anotacoes.keys())
+        return df_completo
 
-                    # --- Buscar contratações pendentes mais recentes por filial ---
-                    query_contratacoes = text("""
-                        WITH RankedRH AS (
-                            SELECT
-                                filial_descricao,
-                                contratacoes_pendentes,
-                                ROW_NUMBER() OVER(PARTITION BY filial_descricao ORDER BY data_registro DESC, id DESC) as rn
-                            FROM rh_duplicate
-                        )
-                        SELECT filial_descricao, contratacoes_pendentes
-                        FROM RankedRH
-                        WHERE rn = 1;
-                    """)
-                    result_contratacoes = conn.execute(query_contratacoes)
-                    df_contratacoes_pendentes = pd.DataFrame(result_contratacoes.fetchall(), columns=result_contratacoes.keys())
-
-                if not df_anotacoes.empty:
-                    df_completo = pd.merge(df_completo, df_anotacoes, on='id_registro_original', how='left')
-                else:
-                    df_completo['texto_anotacao'] = ''
-                    df_completo['nome_usuario'] = None 
-            except Exception as e:
-                st.error(f"Erro detalhado ao buscar dados do banco: {e}")
-                df_completo['texto_anotacao'] = ''
-                df_completo['nome_usuario'] = None
-        else:
-            df_completo['texto_anotacao'] = ''
-            df_completo['nome_usuario'] = None
-
-        df_completo['texto_anotacao'] = df_completo['texto_anotacao'].fillna('')
-        df_completo['nome_usuario'] = df_completo['nome_usuario'].fillna('')
-        df_completo = df_completo.loc[:, ~df_completo.columns.duplicated()]
-        
-        return df_completo, df_contratacoes_pendentes
-        
     except Exception as e:
-        st.error(f"Ocorreu um erro crítico ao processar os dados: {e}")
-        return pd.DataFrame(), pd.DataFrame()
-    
-def format_BRL(valor):
-    """Formata um valor numérico para o padrão de moeda brasileiro (R$)."""
+        st.error(f"Erro ao carregar dados de Horas Extras: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300, show_spinner="Carregando quadro de colaboradores...")
+def carregar_colaboradores(_gs_client, nome_planilha):
+    """Carrega e processa apenas os dados da aba COLABORADORES."""
     try:
-        locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
-        return locale.currency(valor, grouping=True, symbol=True)
-    except (ValueError, TypeError, locale.Error):
-        if isinstance(valor, (int, float)):
-            return f"R$ {valor:_.2f}".replace('.', ',').replace('_', '.')
-        return "R$ 0,00"
+        planilha = _gs_client.open(nome_planilha)
+        aba_colaboradores = planilha.worksheet('COLABORADORES')
+        registros = aba_colaboradores.get_all_records(head=1)
+        if not registros: return pd.DataFrame()
 
-def format_horas_decimal(horas_decimais):
-    """Converte um valor de horas decimais para o formato HHH.HHH:MMh."""
+        df_colaboradores = pd.DataFrame(registros)
+        df_colaboradores.columns = [str(col).strip().lower() for col in df_colaboradores.columns]
+        df_colaboradores['filial'] = df_colaboradores['filial'].str.strip()
+        df_colaboradores['situação'] = df_colaboradores['situação'].str.strip().str.upper()
+        df_colaboradores['colaborador'] = df_colaboradores['colaborador'].str.strip().str.upper()
+        return df_colaboradores
+
+    except gspread.exceptions.WorksheetNotFound:
+        st.warning("Aba 'COLABORADORES' não encontrada. KPIs de headcount estarão indisponíveis.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erro ao carregar dados de Colaboradores: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300, show_spinner="Buscando dados do banco...")
+def carregar_dados_banco(_engine):
+    """Carrega dados de anotações e contratações do banco de dados."""
+    df_anotacoes = pd.DataFrame()
+    df_contratacoes = pd.DataFrame()
+
+    if not _engine:
+        return df_anotacoes, df_contratacoes
+
     try:
-        if pd.isna(horas_decimais) or horas_decimais < 0.01:
-            return "0:00h"
+        with _engine.connect() as conn:
+            # Anotações
+            query_anotacoes = text("SELECT id_registro_original, texto_anotacao, nome_usuario FROM anotacoes")
+            df_anotacoes = pd.DataFrame(conn.execute(query_anotacoes).fetchall(), columns=['id_registro_original', 'texto_anotacao', 'nome_usuario'])
 
-        horas_inteiras = int(horas_decimais)
-        minutos = int((horas_decimais - horas_inteiras) * 60)
-        horas_formatadas = f"{horas_inteiras:,}".replace(",", ".")
-        minutos_formatados = f"{minutos:02d}"
-        return f"{horas_formatadas}:{minutos_formatados}h"
+            # Contratações
+            query_contratacoes = text("""
+                WITH RankedRH AS (
+                    SELECT filial_descricao, contratacoes_pendentes, ROW_NUMBER() OVER(PARTITION BY filial_descricao ORDER BY data_registro DESC, id DESC) as rn
+                    FROM rh_duplicate
+                ) SELECT filial_descricao, contratacoes_pendentes FROM RankedRH WHERE rn = 1;
+            """)
+            df_contratacoes = pd.DataFrame(conn.execute(query_contratacoes).fetchall(), columns=['filial_descricao', 'contratacoes_pendentes'])
+            
+    except Exception as e:
+        st.error(f"Erro ao buscar dados do banco: {e}")
     
-    except (ValueError, TypeError):
-        return "Inválido"
-
-def exibir_kpi_secundario(label, value, icon=""):
-    """
-    Cria um card de KPI estilizado e centralizado usando HTML.
-    O card é projetado para ocupar toda a altura da coluna (height: 100%).
-    """
-    label_com_icon = f"{icon} {label}" if icon else label
-    
-    html = f"""
-    <div style="
-        background-color: #f0f2f6; 
-        border-radius: 10px; 
-        padding: 20px; 
-        text-align: center; 
-        height: 100%; 
-        display: flex; 
-        flex-direction: column; 
-        justify-content: center;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    ">
-        <p style="font-size: 1.0em; font-weight: 600; color: #555; margin: 0; padding: 0;">{label_com_icon}</p>
-        <p style="font-size: 1.8em; font-weight: bold; color: #004080; margin: 5px 0 0 0; padding: 0;">{value}</p>
-    </div>
-    """
-    return html
+    return df_anotacoes, df_contratacoes
 
 # ==============================================================================
-# 2. LÓGICA DO DASHBOARD
+# LÓGICA DO DASHBOARD
 # ==============================================================================
 def run_dashboard():
     st.title("👥 Dashboard de Recursos Humanos")
@@ -246,20 +225,37 @@ def run_dashboard():
             st.error(f"Falha na autenticação com o Google Sheets: {e}")
             return None
 
-    # --- Interface Principal do Dashboard ---
+    # --- CARREGAMENTO MODULAR DOS DADOS ---
     gs_client = autenticar_google_sheets()
-    if not gs_client:
-        st.stop()
+    if not gs_client: st.stop()
 
-    with st.spinner("Carregando e processando dados..."):
-        df, df_contratacoes = carregar_e_preparar_dados(gs_client, NOME_DA_PLANILHA, engine)
-
-    if df.empty:
-        st.warning("Não há dados válidos para exibir.")
-        st.stop()
+    df_horas = carregar_horas_e_operacao(gs_client, NOME_DA_PLANILHA)
+    df_colaboradores = carregar_colaboradores(gs_client, NOME_DA_PLANILHA)
+    df_anotacoes, df_contratacoes = carregar_dados_banco(engine)
     
-    # --- FILTROS ---
-    # Captura e exibe a data da última atualização na sidebar
+    # --- PONTO DE PARADA SE DADOS ESSENCIAIS NÃO FOREM CARREGADOS ---
+    if df_horas.empty:
+        st.warning("Não há dados de horas extras válidos para exibir. O dashboard não pode continuar.")
+        st.stop()
+        
+    # --- JUNÇÃO E PREPARAÇÃO FINAL DOS DADOS ---
+    with st.spinner("Finalizando preparação dos dados..."):
+        df_horas['qtd_he_50%_dec'] = df_horas['qtd_he_50%'].apply(converter_hora_para_decimal)
+        df_horas['qtd_he_100%_dec'] = df_horas['qtd_he_100%'].apply(converter_hora_para_decimal)
+        df_horas['id_registro_original'] = df_horas['nome'].astype(str) + '_' + df_horas['data'].dt.strftime('%Y-%m-%d')
+        
+        if not df_anotacoes.empty:
+            df = pd.merge(df_horas, df_anotacoes, on='id_registro_original', how='left')
+        else:
+            df = df_horas.copy()
+            df['texto_anotacao'] = ''
+            df['nome_usuario'] = None
+            
+        df['texto_anotacao'] = df['texto_anotacao'].fillna('')
+        df['nome_usuario'] = df['nome_usuario'].fillna('')
+        df = df.loc[:, ~df.columns.duplicated()]
+
+    # --- Interface Principal do Dashboard ---
     if 'data' in df.columns and not df['data'].isnull().all():
         ultima_atualizacao = pd.to_datetime(df['data']).max().strftime('%d/%m')
         st.sidebar.info(f"🗓️ Atualizado até **{ultima_atualizacao}**")
@@ -333,6 +329,24 @@ def run_dashboard():
                 if not df_contratacoes_filtrado.empty:
                     total_contratacoes_pendentes = int(df_contratacoes_filtrado['contratacoes_pendentes'].iloc[0])
 
+
+        # --- LÓGICA PARA CALCULAR KPIs DE COLABORADORES
+        total_colaboradores_geral = 0
+        total_colaboradores_ativos = 0
+        total_colaboradores_inativos = 0
+
+        if not df_colaboradores.empty:
+            df_colab_filtrado = df_colaboradores.copy()
+            # Aplica o filtro de filial, se não for "Todas"
+            if filial_selecionada_nome != 'Todas':
+                df_colab_filtrado = df_colaboradores[df_colaboradores['filial'] == filial_selecionada_nome]
+            
+            # Realiza os cálculos sobre o DataFrame (filtrado ou não)
+            if not df_colab_filtrado.empty:
+                total_colaboradores_ativos = df_colab_filtrado[df_colab_filtrado['situação'] == 'TRABALHANDO']['colaborador'].nunique()
+                total_colaboradores_inativos = df_colab_filtrado[df_colab_filtrado['situação'] != 'TRABALHANDO']['colaborador'].nunique()
+                total_colaboradores_geral = df_colab_filtrado['colaborador'].nunique()
+
         # --- KPI PRINCIPAL ---
         html_kpi_principal = f"""
         <div style="display: flex; justify-content: space-around; align-items: center; background-color: #004080; color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
@@ -371,11 +385,11 @@ def run_dashboard():
         st.write("") 
         kpi_col5, kpi_col6, kpi_col7, kpi_col8 = st.columns(4)
         with kpi_col5:
-            st.markdown(exibir_kpi_secundario("Total de Colaboradores", f"{total_colaboradores_he}", icon="👥"), unsafe_allow_html=True)
+            st.markdown(exibir_kpi_secundario("Total de Colaboradores", f"{total_colaboradores_geral}", icon="👥"), unsafe_allow_html=True)
         with kpi_col6:
-            st.markdown(exibir_kpi_secundario("Colaboradores Ativos", "N/D", icon="🟢"), unsafe_allow_html=True)
+            st.markdown(exibir_kpi_secundario("Colaboradores Ativos", f"{total_colaboradores_ativos}", icon="🟢"), unsafe_allow_html=True)
         with kpi_col7:
-            st.markdown(exibir_kpi_secundario("Colaboradores Inativos", "N/D", icon="🔴"), unsafe_allow_html=True)
+            st.markdown(exibir_kpi_secundario("Colaboradores Inativos", f"{total_colaboradores_inativos}", icon="🔴"), unsafe_allow_html=True)
         with kpi_col8:
             st.markdown(exibir_kpi_secundario("Contratações Pendentes", f"{total_contratacoes_pendentes}", icon="📝"), unsafe_allow_html=True)
             #kpi4.metric(label="**👥 Colaboradores com HE**", value=f"{total_colaboradores}")
@@ -557,7 +571,7 @@ def run_dashboard():
             )
             # --- Fim da Lógica de Download ---
 
-            # O restante do código para exibir e editar a tabela continua o mesmo
+            # Lógica para exibir e editar a tabela
             df_editor_pronto = df_para_anotar.copy()
             df_editor_pronto.rename(columns={
                 'texto_anotacao': 'Anotação',
@@ -671,7 +685,7 @@ def run_dashboard():
             )
 
 # ==============================================================================
-# 3. CONTROLE DE FLUXO PRINCIPAL
+# 4. CONTROLE DE FLUXO PRINCIPAL
 # ==============================================================================
 if not get_logged_user():
     st.title("🔐 Autenticação de Usuário")
