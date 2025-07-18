@@ -327,6 +327,7 @@ def run_dashboard():
     else:
         # --- SEÇÃO DE KPIs ---
         total_he_geral = df_filtrado['valor_total'].sum()
+        custo_total_com_encargos = total_he_geral * 1.16  # <-- NOVO CALCULO
         total_he_50 = df_filtrado['valor_he_50%'].sum()
         total_he_100 = df_filtrado['valor_he_100%'].sum()
         total_horas_50_dec = df_filtrado['qtd_he_50%_dec'].sum()
@@ -371,17 +372,18 @@ def run_dashboard():
         html_kpi_principal = f"""
         <div style="display: flex; justify-content: space-around; align-items: center; background-color: #004080; color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
             <div style="text-align: center; flex-grow: 1;">
-                <p style="font-size: 1.2em; color: #d0d0d0; margin-bottom: 0;">CUSTO TOTAL COM HORAS EXTRAS</p>
+                <p style="font-size: 1.2em; color: #ffffff; margin-bottom: 0;">CUSTO TOTAL COM HORAS EXTRAS</p>
                 <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{format_BRL(total_he_geral)}</p>
+                <p style="font-size: 1.0em; color: #ffffff; margin-top: 2px;">Projeção c/ Encargos (16%): <b>{format_BRL(custo_total_com_encargos)}</b></p>               
             </div>
             <div style="border-left: 2px solid #aab; height: 80px; margin: 0 20px;"></div>
             <div style="text-align: center; flex-grow: 1;">
-                <p style="font-size: 1.2em; color: #d0d0d0; margin-bottom: 0;">QUANTIDADE TOTAL DE HORAS</p>
+                <p style="font-size: 1.2em; color: #ffffff; margin-bottom: 0;">QUANTIDADE TOTAL DE HORAS</p>
                 <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{format_horas_decimal(total_horas_dec)}</p>
             </div>
             <div style="border-left: 2px solid #aab; height: 80px; margin: 0 20px;"></div>
             <div style="text-align: center; flex-grow: 1;">
-                <p style="font-size: 1.2em; color: #d0d0d0; margin-bottom: 0;">TOTAL COLABORADORES COM HE</p>
+                <p style="font-size: 1.2em; color: #ffffff; margin-bottom: 0;">TOTAL COLABORADORES COM HE</p>
                 <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{(total_colaboradores_he)}</p>
             </div>
 
