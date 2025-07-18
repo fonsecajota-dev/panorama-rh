@@ -426,7 +426,7 @@ def run_dashboard():
         with col_exp1:
             with st.expander(f"🟢 Listar Colaboradores Ativos ({total_colaboradores_ativos})"):
                 if not df_ativos_display.empty:
-                    st.dataframe(df_ativos_display[['Colaborador', 'Função', 'Filial']], use_container_width=True, hide_index=True)
+                    st.dataframe(df_ativos_display[['Colaborador', 'Filial', 'Situação']], use_container_width=True, hide_index=True)
                     st.download_button(label="📥 Baixar Lista de Ativos (.csv)", data=converte_df_para_csv(df_ativos_display), file_name=f"colaboradores_ativos.csv", mime='text/csv')
                 else: st.info("Nenhum colaborador ativo para os filtros.")
         
