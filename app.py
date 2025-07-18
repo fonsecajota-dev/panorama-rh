@@ -730,17 +730,43 @@ def run_dashboard():
 # ==============================================================================
 # 4. CONTROLE DE FLUXO PRINCIPAL
 # ==============================================================================
-if not get_logged_user():
-    st.title("🔐 Autenticação de Usuário")
-    with st.form("login_form"):
-        email = st.text_input("Email")
-        senha = st.text_input("Senha", type="password")
-        if st.form_submit_button("Entrar"):
-            user_info = authenticate_user(email, senha)
-            if user_info:
-                st.session_state['user'] = user_info
-                st.rerun()
-            else:
-                st.error("Email ou senha inválidos.")
+if not get_logged_user():   
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        # Adiciona um espaço no topo para um melhor alinhamento vertical
+        st.markdown("<br><br><br>", unsafe_allow_html=True)
+        
+        # Container para criar um efeito de "card" com borda
+        with st.container(border=True):
+            st.title("🔐 Autenticação de Usuário")
+            st.markdown("Por favor, insira suas credenciais para acessar o dashboard.")
+            
+            # Formulário de login
+            with st.form("login_form_central"):
+                email = st.text_input("📧 **Email**", key="login_email")
+                senha = st.text_input("🔑 **Senha**", type="password", key="login_senha")                
+                st.markdown("<br>", unsafe_allow_html=True) # Espaçador                
+                
+                submitted = st.form_submit_button(
+                    "Entrar", 
+                    use_container_width=True, 
+                    type="primary"
+                )
+                if submitted:
+                    user_info = authenticate_user(email, senha)
+                    if user_info:
+                        st.session_state['user'] = user_info
+                        st.rerun()
+                    else:
+                        st.error("Email ou senha inválidos. Por favor, tente novamente.")
+        # Rodapé simples
+        st.markdown(
+            """
+            <div style="text-align: center; margin-top: 20px; color: grey;">
+                <p>NT Transportes - Dashboard Recursos Humano © 2025</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 else:
     run_dashboard()
