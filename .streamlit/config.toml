@@ -2,4 +2,19 @@
 magicEnabled = false
 
 [theme]
-primaryColor = "#FF4B4B"
+#primaryColor = "#FF4B4B"
+
+# Cor primária (azul, usado nos botões e widgets)
+primaryColor="#004080"
+
+# Cor de fundo principal (branco)
+backgroundColor="#FFFFFF"
+
+# Cor de fundo secundária (cinza claro da sidebar e dos cards)
+secondaryBackgroundColor="#f0f2f6"
+
+# Cor do texto principal (cinza escuro, mais suave que o preto puro)
+textColor="#31333F"
+
+# Tipo de fonte padrão
+font="sans serif"
