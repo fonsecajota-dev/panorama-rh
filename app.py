@@ -374,7 +374,7 @@ def run_dashboard():
             <div style="text-align: center; flex-grow: 1;">
                 <p style="font-size: 1.2em; color: #ffffff; margin-bottom: 0;">CUSTO TOTAL COM HORAS EXTRAS</p>
                 <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{format_BRL(total_he_geral)}</p>
-                <p style="font-size: 1.0em; color: #ffffff; margin-top: 2px;">Projeção c/ Encargos (16%): <b>{format_BRL(custo_total_com_encargos)}</b></p>               
+                <p style="font-size: 0.9em; color: #ffffff; margin-top: 2px;">Projeção c/ Encargos (16%): <b>{format_BRL(custo_total_com_encargos)}</b></p>               
             </div>
             <div style="border-left: 2px solid #aab; height: 80px; margin: 0 20px;"></div>
             <div style="text-align: center; flex-grow: 1;">
