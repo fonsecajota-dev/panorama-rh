@@ -763,7 +763,7 @@ if not get_logged_user():
         st.markdown(
             """
             <div style="text-align: center; margin-top: 20px; color: grey;">
-                <p>NT Transportes - Dashboard Recursos Humano © 2025</p>
+                <p>NT Transportes - Dashboard Recursos Humanos © 2025</p>
             </div>
             """,
             unsafe_allow_html=True
