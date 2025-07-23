@@ -297,7 +297,7 @@ def run_dashboard():
 
     st.sidebar.header("🔍 Filtros Principais")
     
-    meses_pt = {i: datetime(2000, i, 1).strftime('%B').capitalize() for i in range(1, 13)}   
+    meses_pt = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
     # Filtro de Ano: Usa a nova coluna 'ano_comercial'
     anos_disponiveis = sorted(df['ano_comercial'].unique(), reverse=True)
     ano_selecionado = st.sidebar.selectbox("**Ano**", anos_disponiveis, index=0)
