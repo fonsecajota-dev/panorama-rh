@@ -272,6 +272,18 @@ def run_dashboard():
         df['nome_usuario'] = df['nome_usuario'].fillna('')
         df = df.loc[:, ~df.columns.duplicated()]
 
+        # --- LÓGICA DO PERÍODO COMERCIAL ADICIONADA AQUI ---
+        def determinar_periodo_comercial(data):
+            if data.day > 20:
+                data_periodo = data + pd.DateOffset(months=1)
+                return data_periodo.year, data_periodo.month
+            else:
+                return data.year, data.month
+        
+        df[['ano_comercial', 'mes_comercial']] = df['data'].apply(
+            lambda data: pd.Series(determinar_periodo_comercial(data))
+        )
+
     # --- Interface Principal do Dashboard ---
     if 'data' in df.columns and not df['data'].isnull().all():
         ultima_atualizacao = pd.to_datetime(df['data']).max().strftime('%d/%m')
@@ -284,31 +296,43 @@ def run_dashboard():
         st.rerun()
 
     st.sidebar.header("🔍 Filtros Principais")
-    meses_pt = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
-    anos_disponiveis = sorted(df['data'].dt.year.unique(), reverse=True)
+    
+    meses_pt = {i: datetime(2000, i, 1).strftime('%B').capitalize() for i in range(1, 13)}   
+    # Filtro de Ano: Usa a nova coluna 'ano_comercial'
+    anos_disponiveis = sorted(df['ano_comercial'].unique(), reverse=True)
     ano_selecionado = st.sidebar.selectbox("**Ano**", anos_disponiveis, index=0)
     
-    df_ano = df[df['data'].dt.year == ano_selecionado]
-    meses_disponiveis_ano = sorted(df_ano['data'].dt.month.unique())
+    # Filtra o DataFrame pelo ano comercial selecionado
+    df_ano = df[df['ano_comercial'] == ano_selecionado]
+    
+    # Filtro de Mês: Usa a nova coluna 'mes_comercial'
+    meses_disponiveis_ano = sorted(df_ano['mes_comercial'].unique())
     meses_nomes_disponiveis = ['Todos'] + [meses_pt[m] for m in meses_disponiveis_ano]
 
-    # Define o índice padrão para o filtro de mês
-    mes_atual_num = datetime.now().month
-    mes_atual_nome = meses_pt.get(mes_atual_num)
-    indice_padrao = 0 # Padrão é 'Todos'
-    if mes_atual_nome in meses_nomes_disponiveis:
-        indice_padrao = meses_nomes_disponiveis.index(mes_atual_nome)
+    # Lógica para definir o mês padrão corretamente
+    hoje = datetime.now()
+    data_referencia = hoje + pd.DateOffset(months=1) if hoje.day > 20 else hoje
+    indice_padrao = 0
+    if ano_selecionado == data_referencia.year:
+        mes_comercial_nome_atual = meses_pt.get(data_referencia.month)
+        if mes_comercial_nome_atual in meses_nomes_disponiveis:
+            indice_padrao = meses_nomes_disponiveis.index(mes_comercial_nome_atual)
         
     mes_selecionado_nome = st.sidebar.selectbox("**Mês**", meses_nomes_disponiveis, index=indice_padrao)
+    
+    # Lógica de filtragem final
     if mes_selecionado_nome == 'Todos':
         df_periodo = df_ano.copy()
         info_periodo = f"Exibindo dados de todo o ano de **{ano_selecionado}**."
     else:
-        mes_num = [k for k, v in meses_pt.items() if v == mes_selecionado_nome][0]
-        data_fim = pd.to_datetime(f'{ano_selecionado}-{mes_num}-20')
-        data_inicio = (data_fim - pd.DateOffset(months=1)).replace(day=21)
-        df_periodo = df[(df['data'] >= data_inicio) & (df['data'] <= data_fim)].copy()
-        info_periodo = f"Período de **{data_inicio.strftime('%d/%m/%Y')}** a **{data_fim.strftime('%d/%m/%Y')}**."
+        mes_num = next(k for k, v in meses_pt.items() if v == mes_selecionado_nome)
+        # Filtra o DataFrame usando a coluna 'mes_comercial'
+        df_periodo = df_ano[df_ano['mes_comercial'] == mes_num].copy()
+        
+        # Calcula as datas de início e fim apenas para o texto informativo
+        data_fim_info = pd.to_datetime(f'{ano_selecionado}-{mes_num}-20')
+        data_inicio_info = (data_fim_info - pd.DateOffset(months=1)).replace(day=21)
+        info_periodo = f"Período de **{data_inicio_info.strftime('%d/%m/%Y')}** a **{data_fim_info.strftime('%d/%m/%Y')}**."
 
     mapa_filiais = {'Guarulhos': 'Guarulhos', 'Valinhos': 'Valinhos', 'Ribeirao': 'Ribeirão', 'Marilia': 'Marília', 'Jacareí': 'Jacareí'}
     filiais_disponiveis = sorted(df_periodo['filial'].unique().tolist())
@@ -374,7 +398,7 @@ def run_dashboard():
             <div style="text-align: center; flex-grow: 1;">
                 <p style="font-size: 1.2em; color: #ffffff; margin-bottom: 0;">CUSTO TOTAL COM HORAS EXTRAS</p>
                 <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{format_BRL(total_he_geral)}</p>
-                <p style="font-size: 0.9em; color: #ffffff; margin-top: 2px;">Projeção c/ Encargos (16%): <b>{format_BRL(custo_total_com_encargos)}</b></p>               
+                <p style="font-size: 1.0em; color: #ffffff; margin-top: 2px;">Projeção c/ Encargos (16%): <b>{format_BRL(custo_total_com_encargos)}</b></p>
             </div>
             <div style="border-left: 2px solid #aab; height: 80px; margin: 0 20px;"></div>
             <div style="text-align: center; flex-grow: 1;">
@@ -744,14 +768,17 @@ if not get_logged_user():
             # Formulário de login
             with st.form("login_form_central"):
                 email = st.text_input("📧 **Email**", key="login_email")
-                senha = st.text_input("🔑 **Senha**", type="password", key="login_senha")                
-                st.markdown("<br>", unsafe_allow_html=True) # Espaçador                
+                senha = st.text_input("🔑 **Senha**", type="password", key="login_senha")
                 
+                st.markdown("<br>", unsafe_allow_html=True) # Espaçador
+                
+                # Botão de submit centralizado e destacado
                 submitted = st.form_submit_button(
                     "Entrar", 
                     use_container_width=True, 
                     type="primary"
                 )
+
                 if submitted:
                     user_info = authenticate_user(email, senha)
                     if user_info:
@@ -759,11 +786,12 @@ if not get_logged_user():
                         st.rerun()
                     else:
                         st.error("Email ou senha inválidos. Por favor, tente novamente.")
+
         # Rodapé simples
         st.markdown(
             """
             <div style="text-align: center; margin-top: 20px; color: grey;">
-                <p>NT Transportes - Dashboard Recursos Humanos © 2025</p>
+                <p>NT Transportes - Dashboard Recursos Humano © 2025</p>
             </div>
             """,
             unsafe_allow_html=True
