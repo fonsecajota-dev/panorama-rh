@@ -505,23 +505,24 @@ def run_dashboard():
                     st.rerun()
 
             # SE NENHUM CARGO FOI SELECIONADO (VISÃO PRINCIPAL)
+# SE NENHUM CARGO FOI SELECIONADO (VISÃO PRINCIPAL)
             else:
                 custo_por_cargo = df_filtrado.groupby('cargo')['valor_total'].sum().sort_values(ascending=False).reset_index()
                 custo_por_cargo['valor_formatado'] = custo_por_cargo['valor_total'].apply(format_BRL)
-
-                # Usando a abordagem de plotly.graph_objects que é mais robusta
+                
+                # --- ABORDAGEM FINAL COM PLOTLY.GRAPH_OBJECTS (go) ---
                 import plotly.graph_objects as go
                 fig_bar = go.Figure()
-                
                 for index, row in custo_por_cargo.iterrows():
                     fig_bar.add_trace(go.Bar(
                         x=[row['cargo']],
                         y=[row['valor_total']],
                         name=row['cargo'],
-                        text=row['valor_formatado'],
-                        hovertemplate='<b>Cargo:</b> %{x}<br><b>Custo Total:</b> %{text}<extra></extra>'
+                        customdata=[[row['cargo'], row['valor_formatado']]],
+                        hovertemplate='<b>Cargo:</b> %{customdata[0]}<br><b>Custo Total:</b> %{customdata[1]}<extra></extra>'
                     ))
 
+                # Aplica o layout e a formatação de texto na barra
                 fig_bar.update_layout(
                     barmode='group',
                     hovermode='closest',
@@ -531,34 +532,29 @@ def run_dashboard():
                     hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial, sans-serif", font_color="black"),
                     plot_bgcolor='rgba(0,0,0,0)',
                     paper_bgcolor='rgba(0,0,0,0)',
-                    margin=dict(l=40, r=40, t=20, b=40) # Margem do topo pequena pois não há título interno
+                    margin=dict(l=40, r=40, t=20, b=40)
                 )
-                
+
                 fig_bar.update_traces(
                     texttemplate='%{y:.2s}',
                     textposition='outside'
                 )
-                
-                # Renderiza o gráfico de forma estável com st.plotly_chart
+
                 st.plotly_chart(fig_bar, use_container_width=True)
 
-                # --- NOVO MENU DE SELEÇÃO PARA O DRILL-DOWN ---
-                st.write("") # Espaçador
+                st.write("") 
                 lista_cargos = custo_por_cargo['cargo'].tolist()
-                
-                # Adiciona uma opção default para a visão geral
                 opcoes_menu = ["-- Selecione um cargo para ver detalhes --"] + lista_cargos
-                
                 cargo_selecionado_menu = st.selectbox(
                     "**Análise Detalhada por Cargo:**",
-                    options=opcoes_menu
+                    options=opcoes_menu,
+                    key="selectbox_cargo_drilldown" # Adicionada uma chave para evitar conflitos
                 )
 
-                # Se o usuário selecionar um cargo (e não a opção default), atualiza o estado
                 if cargo_selecionado_menu != opcoes_menu[0]:
                     st.session_state.selected_cargo = cargo_selecionado_menu
                     st.rerun()
-
+                
         # GRÁFICO 2: Evolução do Custo por Filial (Gráfico de Linha com Tooltip Consolidado)
         with col_graf2:
             st.subheader("Evolução do Custo por Filial")
@@ -614,7 +610,6 @@ def run_dashboard():
                 fig_line.update_traces(
                     hovertemplate=f'<b>{filial_selecionada_nome}:</b> R$ %{{y:,.2f}}<extra></extra>'
                 )
-            
             st.plotly_chart(fig_line, use_container_width=True)
 
         # --- SEÇÃO DE ANOTAÇÕES ---
