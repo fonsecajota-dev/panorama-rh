@@ -1,9 +1,9 @@
 # requirements.txt
-streamlit
-pandas
-gspread
-sqlalchemy
-bcrypt
-plotly
-psycopg2-binary
-streamlit_plotly_events
+bcrypt==4.1.3
+gspread==6.0.2
+numpy==1.26.4
+pandas==2.2.2
+plotly==5.22.0
+psycopg2-binary==2.9.9
+streamlit==1.37.0
+streamlit-plotly-events==0.0.6
