@@ -205,84 +205,92 @@ def carregar_dados_banco(_engine):
     return df_anotacoes, df_contratacoes
 
 # ==============================================================================
+# NOVA FUNÇÃO PARA CENTRALIZAR O CARREGAMENTO E PROCESSAMENTO PESADO
+# ==============================================================================
+@st.cache_data(ttl=300, show_spinner="Sincronizando e processando todos os dados...")
+def carregar_e_processar_dados_iniciais(_gs_client, _engine, nome_planilha):
+    """
+    Centraliza o carregamento de todas as fontes de dados e o processamento pesado
+    que só precisa ser feito uma vez.
+    """
+    # 1. Carregar dados das fontes
+    df_horas = carregar_horas_e_operacao(_gs_client, nome_planilha)
+    df_colaboradores = carregar_colaboradores(_gs_client, nome_planilha)
+    df_anotacoes, df_contratacoes = carregar_dados_banco(_engine)
+
+    # Ponto de parada se dados essenciais não forem carregados
+    if df_horas.empty:
+        return None, None, None, None
+
+    # 2. Processamento pesado (merges, apply, etc.)
+    df_horas['qtd_he_50%_dec'] = df_horas['qtd_he_50%'].apply(converter_hora_para_decimal)
+    df_horas['qtd_he_100%_dec'] = df_horas['qtd_he_100%'].apply(converter_hora_para_decimal)
+    df_horas['id_registro_original'] = df_horas['nome'].astype(str) + '_' + df_horas['data'].dt.strftime('%Y-%m-%d')
+    
+    if not df_anotacoes.empty:
+        df = pd.merge(df_horas, df_anotacoes, on='id_registro_original', how='left')
+    else:
+        df = df_horas.copy()
+        df['texto_anotacao'] = ''
+        df['nome_usuario'] = None
+        
+    df['texto_anotacao'] = df['texto_anotacao'].fillna('')
+    df['nome_usuario'] = df['nome_usuario'].fillna('')
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    def determinar_periodo_comercial(data):
+        if data.day > 20:
+            data_periodo = data + pd.DateOffset(months=1)
+            return data_periodo.year, data_periodo.month
+        else:
+            return data.year, data.month
+    
+    df[['ano_comercial', 'mes_comercial']] = df['data'].apply(
+        lambda data: pd.Series(determinar_periodo_comercial(data))
+    )
+    
+    return df, df_colaboradores, df_contratacoes
+
+# ==============================================================================
 # LÓGICA DO DASHBOARD
 # ==============================================================================
 def run_dashboard():
     st.title("👥 Dashboard de Recursos Humanos")
 
-# --- NOVO BLOCO DE CSS PARA ESTILIZAR O EXPANDER ---
+    # --- NOVO BLOCO DE CSS PARA ESTILIZAR O EXPANDER (pode manter o seu) ---
     st.markdown("""
     <style>
-        /* Alvo é o cabeçalho do expander (o elemento <summary>) */
         div[data-testid="stExpander"] summary {
-            background-color: #f0f2f6;
-            border: 1px solid #e6eaf1;
-            border-radius: 10px;
-            padding: 12px;
-            font-size: 1.05em;
-            font-weight: 600;
-            color: #004080;
-            transition: background-color 0.2s ease-in-out;
+            background-color: #f0f2f6; border: 1px solid #e6eaf1; border-radius: 10px;
+            padding: 12px; font-size: 1.05em; font-weight: 600; color: #004080;
         }
-        /* Efeito hover para melhor feedback visual */
-        div[data-testid="stExpander"] summary:hover {
-            background-color: #e6eaf1;
-        }
+        div[data-testid="stExpander"] summary:hover { background-color: #e6eaf1; }
     </style>
     """, unsafe_allow_html=True)
 
     usuario_logado = get_logged_user()
     NOME_DA_PLANILHA = "bdBANCO DE HORAS"
 
-    @st.cache_resource(ttl=300)
-    def autenticar_google_sheets():
-        try:
-            return gspread.service_account_from_dict(st.secrets["gcp_service_account"])
-        except Exception as e:
-            st.error(f"Falha na autenticação com o Google Sheets: {e}")
-            return None
-
-    # --- CARREGAMENTO MODULAR DOS DADOS ---
-    gs_client = autenticar_google_sheets()
-    if not gs_client: st.stop()
-
-    df_horas = carregar_horas_e_operacao(gs_client, NOME_DA_PLANILHA)
-    df_colaboradores = carregar_colaboradores(gs_client, NOME_DA_PLANILHA)
-    df_anotacoes, df_contratacoes = carregar_dados_banco(engine)
-    
-    # --- PONTO DE PARADA SE DADOS ESSENCIAIS NÃO FOREM CARREGADOS ---
-    if df_horas.empty:
-        st.warning("Não há dados de horas extras válidos para exibir. O dashboard não pode continuar.")
-        st.stop()
+    # --- LÓGICA DE CARREGAMENTO ÚNICO COM st.session_state ---
+    if 'data_loaded' not in st.session_state:
+        gs_client = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
+        df, df_colaboradores, df_contratacoes = carregar_e_processar_dados_iniciais(gs_client, engine, NOME_DA_PLANILHA)
         
-    # --- JUNÇÃO E PREPARAÇÃO FINAL DOS DADOS ---
-    with st.spinner("Finalizando preparação dos dados..."):
-        df_horas['qtd_he_50%_dec'] = df_horas['qtd_he_50%'].apply(converter_hora_para_decimal)
-        df_horas['qtd_he_100%_dec'] = df_horas['qtd_he_100%'].apply(converter_hora_para_decimal)
-        df_horas['id_registro_original'] = df_horas['nome'].astype(str) + '_' + df_horas['data'].dt.strftime('%Y-%m-%d')
-        
-        if not df_anotacoes.empty:
-            df = pd.merge(df_horas, df_anotacoes, on='id_registro_original', how='left')
-        else:
-            df = df_horas.copy()
-            df['texto_anotacao'] = ''
-            df['nome_usuario'] = None
+        if df is None:
+            st.warning("Não há dados de horas extras válidos para exibir. O dashboard não pode continuar.")
+            st.stop()
             
-        df['texto_anotacao'] = df['texto_anotacao'].fillna('')
-        df['nome_usuario'] = df['nome_usuario'].fillna('')
-        df = df.loc[:, ~df.columns.duplicated()]
+        # Armazena os dados processados na sessão
+        st.session_state['df_principal'] = df
+        st.session_state['df_colaboradores'] = df_colaboradores
+        st.session_state['df_contratacoes'] = df_contratacoes
+        st.session_state['data_loaded'] = True
+        st.toast("Dados carregados e processados!", icon="✅")
 
-        # --- LÓGICA DO PERÍODO COMERCIAL ADICIONADA AQUI ---
-        def determinar_periodo_comercial(data):
-            if data.day > 20:
-                data_periodo = data + pd.DateOffset(months=1)
-                return data_periodo.year, data_periodo.month
-            else:
-                return data.year, data.month
-        
-        df[['ano_comercial', 'mes_comercial']] = df['data'].apply(
-            lambda data: pd.Series(determinar_periodo_comercial(data))
-        )
+    # A partir daqui, sempre usamos os dados da sessão
+    df = st.session_state['df_principal']
+    df_colaboradores = st.session_state['df_colaboradores']
+    df_contratacoes = st.session_state['df_contratacoes']
 
     # --- Interface Principal do Dashboard ---
     if 'data' in df.columns and not df['data'].isnull().all():
@@ -291,12 +299,19 @@ def run_dashboard():
 
     # Botão para limpar cache / forçar sincronização
     if st.sidebar.button("🔄 Forçar Sincronização", use_container_width=True):
+        # Limpa o cache de dados e o estado da sessão para forçar o recarregamento
         st.cache_data.clear()
-        st.success("Cache limpo! Os dados serão recarregados do banco.")
+        keys_to_delete = ['data_loaded', 'df_principal', 'df_colaboradores', 'df_contratacoes']
+        for key in keys_to_delete:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.success("Sincronização forçada! Os dados serão recarregados na próxima ação.")
         st.rerun()
 
+    # RESTANTE DO SEU CÓDIGO DO DASHBOARD PERMANECE IGUAL
+    # ... (cole todo o resto da sua função run_dashboard() aqui, começando pelos filtros) ...
+    # Exemplo:
     st.sidebar.header("🔍 Filtros Principais")
-    
     meses_pt = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
     # Filtro de Ano: Usa a nova coluna 'ano_comercial'
     anos_disponiveis = sorted(df['ano_comercial'].unique(), reverse=True)
