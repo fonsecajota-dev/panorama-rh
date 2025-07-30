@@ -309,9 +309,6 @@ def run_dashboard():
         st.success("Sincronização forçada! Os dados serão recarregados na próxima ação.")
         st.rerun()
 
-    # RESTANTE DO SEU CÓDIGO DO DASHBOARD PERMANECE IGUAL
-    # ... (cole todo o resto da sua função run_dashboard() aqui, começando pelos filtros) ...
-    # Exemplo:
     st.sidebar.header("🔍 Filtros Principais")
     meses_pt = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
     # Filtro de Ano: Usa a nova coluna 'ano_comercial'
@@ -489,6 +486,7 @@ def run_dashboard():
 
             # SE UM CARGO FOI SELECIONADO (VISÃO DE DETALHE)
             if st.session_state.selected_cargo:
+                # ... (a lógica de drill-down permanece a mesma)
                 st.markdown(f"#### Detalhes para: **{st.session_state.selected_cargo}**")
                 df_detalhes = df_filtrado[(df_filtrado['cargo'] == st.session_state.selected_cargo) & (df_filtrado['valor_total'] > 0)].copy()
                 df_detalhes['data'] = pd.to_datetime(df_detalhes['data']).dt.strftime('%d/%m/%Y')
@@ -505,7 +503,13 @@ def run_dashboard():
             else:
                 custo_por_cargo = df_filtrado.groupby('cargo')['valor_total'].sum().sort_values(ascending=False).reset_index()
                 custo_por_cargo['valor_formatado'] = custo_por_cargo['valor_total'].apply(format_BRL)
-
+                
+                # --- PASSO DE DIAGNÓSTICO ---
+                # A linha abaixo vai mostrar a tabela de dados exata que está sendo usada pelo gráfico.
+                # Se a coluna 'valor_total' aqui tiver números pequenos (0, 1, 2, 3), encontramos o problema.
+                # Você pode remover ou comentar esta linha após o diagnóstico.
+                st.dataframe(custo_por_cargo) 
+                
                 fig_bar = px.bar(
                     custo_por_cargo,
                     x='cargo',
@@ -514,17 +518,16 @@ def run_dashboard():
                     labels={'cargo': 'Cargo', 'valor_total': 'Custo Total (R$)'},
                     text_auto='.2s',
                     text='valor_formatado',
+                    color='cargo',
                     color_discrete_sequence=px.colors.qualitative.Plotly
                 )
 
                 fig_bar.update_layout(
-                    title_font=dict(family="Arial, sans-serif", size=16, color="grey"),
-                    title_x=0.5,
-                    hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial, sans-serif", font_color="black"),
                     hovermode='closest',
                     showlegend=False,
                     xaxis_title=None,
-                    yaxis_title=None,
+                    yaxis_title="Custo Total (R$)",
+                    hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial, sans-serif", font_color="black"),
                     plot_bgcolor='rgba(0,0,0,0)',
                     paper_bgcolor='rgba(0,0,0,0)',
                     margin=dict(l=40, r=40, t=20, b=40)
@@ -532,8 +535,7 @@ def run_dashboard():
                 
                 fig_bar.update_traces(
                     textposition='outside',
-                    # --- ALTERAÇÃO FINAL E DEFINITIVA DO TOOLTIP ---
-                    hovertemplate='<b>Cargo:</b> %{x}<br><b>Custo Total:</b> %{text}<extra></extra>'
+                    hovertemplate='<b>%{x}:</b> %{text}<extra></extra>'
                 )
                 
                 selected_points = plotly_events(fig_bar, click_event=True, key="bar_chart_clicks")
