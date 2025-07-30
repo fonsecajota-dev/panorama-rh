@@ -480,7 +480,6 @@ def run_dashboard():
 
         # --- SEÇÃO DE GRÁFICOS ---
         col_graf1, col_graf2 = st.columns(2)
-        # CÓDIGO RECOMENDADO PARA O GRÁFICO 1 (col_graf1)
         with col_graf1:
             st.subheader("Custo de HE por Cargo")
 
@@ -512,8 +511,7 @@ def run_dashboard():
                     y='valor_total',
                     title=None,
                     labels={'cargo': 'Cargo', 'valor_total': 'Custo Total (R$)'},
-                    text_auto='.2s',
-                    text='valor_formatado',
+                    text='valor_formatado', # Mantido para alimentar o hovertemplate
                     color_discrete_sequence=px.colors.qualitative.Plotly
                 )
 
@@ -524,18 +522,17 @@ def run_dashboard():
                     hovermode='closest',
                     showlegend=False,
                     xaxis_title=None,
-                    yaxis_title=None,
+                    yaxis_title="Custo Total (R$)",
                     plot_bgcolor='rgba(0,0,0,0)',
                     paper_bgcolor='rgba(0,0,0,0)',
                     margin=dict(l=40, r=40, t=20, b=40)
                 )
                 
                 fig_bar.update_traces(
+                    texttemplate='%{y:.2s}', # Formato para 'k' (mil) etc.
                     textposition='outside',
-                    # --- ALTERAÇÃO FINAL E DEFINITIVA DO TOOLTIP ---
                     hovertemplate='<b>Cargo:</b> %{x}<br><b>Custo Total:</b> %{text}<extra></extra>'
-                )
-                
+                )               
                 selected_points = plotly_events(fig_bar, click_event=True, key="bar_chart_clicks")
 
                 if selected_points:
