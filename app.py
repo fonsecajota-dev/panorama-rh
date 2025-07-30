@@ -481,22 +481,26 @@ def run_dashboard():
         # --- SEÇÃO DE GRÁFICOS ---
         col_graf1, col_graf2 = st.columns(2)
         with col_graf1:
-            st.subheader("Custo de HE por Cargo")
-
             if 'selected_cargo' not in st.session_state:
                 st.session_state.selected_cargo = None
+
+            # Título principal é exibido em ambas as visões
+            st.subheader("Custo de HE por Cargo")
 
             # SE UM CARGO FOI SELECIONADO (VISÃO DE DETALHE)
             if st.session_state.selected_cargo:
                 st.markdown(f"#### Detalhes para: **{st.session_state.selected_cargo}**")
+                
                 df_detalhes = df_filtrado[(df_filtrado['cargo'] == st.session_state.selected_cargo) & (df_filtrado['valor_total'] > 0)].copy()
                 df_detalhes['data'] = pd.to_datetime(df_detalhes['data']).dt.strftime('%d/%m/%Y')
                 df_detalhes['valor_total_fmt'] = df_detalhes['valor_total'].apply(format_BRL)
                 df_detalhes_display = df_detalhes[['data', 'nome', 'filial', 'valor_total_fmt']].rename(columns={
                     'data': 'Data', 'nome': 'Colaborador', 'filial': 'Filial', 'valor_total_fmt': 'Valor Total'
                 }).sort_values(by='Data')
+                
                 st.dataframe(df_detalhes_display, use_container_width=True, hide_index=True)
-                if st.button("⬅️ Voltar para o gráfico"):
+                
+                if st.button("⬅️ Voltar para a visão geral"):
                     st.session_state.selected_cargo = None
                     st.rerun()
 
@@ -505,38 +509,54 @@ def run_dashboard():
                 custo_por_cargo = df_filtrado.groupby('cargo')['valor_total'].sum().sort_values(ascending=False).reset_index()
                 custo_por_cargo['valor_formatado'] = custo_por_cargo['valor_total'].apply(format_BRL)
 
-                fig_bar = px.bar(
-                    custo_por_cargo,
-                    x='cargo',
-                    y='valor_total',
-                    title='Custo Total de Horas Extras por Cargo',
-                    labels={'cargo': 'Cargo', 'valor_total': 'Custo Total (R$)'},
-                    text_auto='.2s',
-                    color_discrete_sequence=px.colors.qualitative.Plotly,  # Paleta de cores profissional
-                    text='valor_formatado'
-                )
+                # Usando a abordagem de plotly.graph_objects que é mais robusta
+                import plotly.graph_objects as go
+                fig_bar = go.Figure()
+                
+                for index, row in custo_por_cargo.iterrows():
+                    fig_bar.add_trace(go.Bar(
+                        x=[row['cargo']],
+                        y=[row['valor_total']],
+                        name=row['cargo'],
+                        text=row['valor_formatado'],
+                        hovertemplate='<b>Cargo:</b> %{x}<br><b>Custo Total:</b> %{text}<extra></extra>'
+                    ))
 
-                # --- Aprimoramentos do Layout e Tooltip ---
                 fig_bar.update_layout(
-                    title_x=0.5,  # Centraliza o título
-                    xaxis_title=None,  # Remove o título do eixo x para um look mais limpo
+                    barmode='group',
+                    hovermode='closest',
+                    showlegend=False,
+                    xaxis_title=None,
                     yaxis_title="Custo Total (R$)",
-                    legend_title_text='Cargo',
-                    plot_bgcolor='rgba(0,0,0,0)',  # Fundo transparente
+                    hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial, sans-serif", font_color="black"),
+                    plot_bgcolor='rgba(0,0,0,0)',
                     paper_bgcolor='rgba(0,0,0,0)',
-                    margin=dict(l=40, r=40, t=40, b=40)
+                    margin=dict(l=40, r=40, t=20, b=40) # Margem do topo pequena pois não há título interno
                 )
+                
                 fig_bar.update_traces(
-                    textposition='outside',
-                    # Personaliza o que aparece ao passar o mouse
-                    hovertemplate='<b>Cargo:</b> %{x}<br><b>Custo Total:</b> %{text}<extra></extra>'
+                    texttemplate='%{y:.2s}',
+                    textposition='outside'
                 )
+                
+                # Renderiza o gráfico de forma estável com st.plotly_chart
                 st.plotly_chart(fig_bar, use_container_width=True)
-                selected_points = plotly_events(fig_bar, click_event=True, key="bar_chart_clicks")
 
-                if selected_points:
-                    cargo_clicado = selected_points[0]['x']
-                    st.session_state.selected_cargo = cargo_clicado
+                # --- NOVO MENU DE SELEÇÃO PARA O DRILL-DOWN ---
+                st.write("") # Espaçador
+                lista_cargos = custo_por_cargo['cargo'].tolist()
+                
+                # Adiciona uma opção default para a visão geral
+                opcoes_menu = ["-- Selecione um cargo para ver detalhes --"] + lista_cargos
+                
+                cargo_selecionado_menu = st.selectbox(
+                    "**Análise Detalhada por Cargo:**",
+                    options=opcoes_menu
+                )
+
+                # Se o usuário selecionar um cargo (e não a opção default), atualiza o estado
+                if cargo_selecionado_menu != opcoes_menu[0]:
+                    st.session_state.selected_cargo = cargo_selecionado_menu
                     st.rerun()
 
         # GRÁFICO 2: Evolução do Custo por Filial (Gráfico de Linha com Tooltip Consolidado)
