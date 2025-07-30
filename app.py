@@ -531,6 +531,7 @@ def run_dashboard():
                     # Personaliza o que aparece ao passar o mouse
                     hovertemplate='<b>Cargo:</b> %{x}<br><b>Custo Total:</b> %{text}<extra></extra>'
                 )
+                st.plotly_chart(fig_bar, use_container_width=True)
                 selected_points = plotly_events(fig_bar, click_event=True, key="bar_chart_clicks")
 
                 if selected_points:
