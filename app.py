@@ -1,13 +1,14 @@
 # app.py (Versão Otimizada)
 
-from sqlalchemy import create_engine, text
-from datetime import datetime, date
-import plotly.express as px
-import streamlit as st
-import pandas as pd
-import gspread
 import bcrypt
 import locale
+import gspread
+import pandas as pd
+import streamlit as st
+import plotly.express as px
+from datetime import datetime, date
+from sqlalchemy import create_engine, text
+from streamlit_plotly_events import plotly_events
 
 # ==============================================================================
 # CONFIGURAÇÃO DA PÁGINA E AUTENTICAÇÃO
@@ -479,93 +480,124 @@ def run_dashboard():
 
         # --- SEÇÃO DE GRÁFICOS ---
         col_graf1, col_graf2 = st.columns(2)
-
-        # GRÁFICO 1: Custo de HE por Cargo (Gráfico de Barras)
+        # CÓDIGO RECOMENDADO PARA O GRÁFICO 1 (col_graf1)
         with col_graf1:
             st.subheader("Custo de HE por Cargo")
-            custo_por_cargo = df_filtrado.groupby('cargo')['valor_total'].sum().sort_values(ascending=False).reset_index()
-            custo_por_cargo['valor_formatado'] = custo_por_cargo['valor_total'].apply(format_BRL)
 
-            fig_bar = px.bar(
-                custo_por_cargo,
-                x='cargo',
-                y='valor_total',
-                title='Custo Total de Horas Extras por Cargo',
-                labels={'cargo': 'Cargo', 'valor_total': 'Custo Total (R$)'},
-                text_auto='.2s',
-                color_discrete_sequence=px.colors.qualitative.Plotly,  # Paleta de cores profissional
-                text='valor_formatado'
-            )
+            if 'selected_cargo' not in st.session_state:
+                st.session_state.selected_cargo = None
 
-            # --- Aprimoramentos do Layout e Tooltip ---
-            fig_bar.update_layout(
-                title_x=0.5,  # Centraliza o título
-                xaxis_title=None,  # Remove o título do eixo x para um look mais limpo
-                yaxis_title="Custo Total (R$)",
-                legend_title_text='Cargo',
-                plot_bgcolor='rgba(0,0,0,0)',  # Fundo transparente
-                paper_bgcolor='rgba(0,0,0,0)',
-                margin=dict(l=40, r=40, t=40, b=40)
-            )
-            fig_bar.update_traces(
-                textposition='outside',
-                # Personaliza o que aparece ao passar o mouse
-                hovertemplate='<b>Cargo:</b> %{x}<br><b>Custo Total:</b> %{text}<extra></extra>'
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
+            # SE UM CARGO FOI SELECIONADO (VISÃO DE DETALHE)
+            if st.session_state.selected_cargo:
+                st.markdown(f"#### Detalhes para: **{st.session_state.selected_cargo}**")
+                df_detalhes = df_filtrado[(df_filtrado['cargo'] == st.session_state.selected_cargo) & (df_filtrado['valor_total'] > 0)].copy()
+                df_detalhes['data'] = pd.to_datetime(df_detalhes['data']).dt.strftime('%d/%m/%Y')
+                df_detalhes['valor_total_fmt'] = df_detalhes['valor_total'].apply(format_BRL)
+                df_detalhes_display = df_detalhes[['data', 'nome', 'filial', 'valor_total_fmt']].rename(columns={
+                    'data': 'Data', 'nome': 'Colaborador', 'filial': 'Filial', 'valor_total_fmt': 'Valor Total'
+                }).sort_values(by='Data')
+                st.dataframe(df_detalhes_display, use_container_width=True, hide_index=True)
+                if st.button("⬅️ Voltar para o gráfico"):
+                    st.session_state.selected_cargo = None
+                    st.rerun()
+
+            # SE NENHUM CARGO FOI SELECIONADO (VISÃO PRINCIPAL)
+            else:
+                custo_por_cargo = df_filtrado.groupby('cargo')['valor_total'].sum().sort_values(ascending=False).reset_index()
+                custo_por_cargo['valor_formatado'] = custo_por_cargo['valor_total'].apply(format_BRL)
+
+                fig_bar = px.bar(
+                    custo_por_cargo,
+                    x='cargo',
+                    y='valor_total',
+                    title=None,
+                    labels={'cargo': 'Cargo', 'valor_total': 'Custo Total (R$)'},
+                    text_auto='.2s',
+                    text='valor_formatado',
+                    color_discrete_sequence=px.colors.qualitative.Plotly
+                )
+
+                fig_bar.update_layout(
+                    title_font=dict(family="Arial, sans-serif", size=16, color="grey"),
+                    title_x=0.5,
+                    hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial, sans-serif", font_color="black"),
+                    hovermode='closest',
+                    showlegend=False,
+                    xaxis_title=None,
+                    yaxis_title=None,
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    margin=dict(l=40, r=40, t=20, b=40)
+                )
+                
+                fig_bar.update_traces(
+                    textposition='outside',
+                    # --- ALTERAÇÃO FINAL E DEFINITIVA DO TOOLTIP ---
+                    hovertemplate='<b>Cargo:</b> %{x}<br><b>Custo Total:</b> %{text}<extra></extra>'
+                )
+                
+                selected_points = plotly_events(fig_bar, click_event=True, key="bar_chart_clicks")
+
+                if selected_points:
+                    cargo_clicado = selected_points[0]['x']
+                    st.session_state.selected_cargo = cargo_clicado
+                    st.rerun()
 
         # GRÁFICO 2: Evolução do Custo por Filial (Gráfico de Linha com Tooltip Consolidado)
         with col_graf2:
             st.subheader("Evolução do Custo por Filial")
-            custo_diario_filial = df_periodo.groupby(['data', 'filial'])['valor_total'].sum().reset_index()
-            custo_diario_filial['filial'] = custo_diario_filial['filial'].map(mapa_filiais).fillna(custo_diario_filial['filial'])
+            if filial_selecionada_nome == 'Todas':
+                custo_diario_filial = df_periodo.groupby(['data', 'filial'])['valor_total'].sum().reset_index()
+                custo_diario_filial['filial'] = custo_diario_filial['filial'].map(mapa_filiais).fillna(custo_diario_filial['filial'])
 
-            # --- ETAPA 1: Pivotar os dados ---
-            df_pivot = custo_diario_filial.pivot_table(
-                index='data',
-                columns='filial',
-                values='valor_total',
-                fill_value=0
-            ).reset_index()
-
-            # --- ETAPA 2: Criar o texto personalizado para o tooltip ---
-            tooltip_texts = []
-            for index, row in df_pivot.iterrows():
-                hover_text = f"<b>Data: {row['data'].strftime('%d/%m/%Y')}</b><br>--------------------<br>"
+                fig_line = px.line(
+                    custo_diario_filial,
+                    x='data',
+                    y='valor_total',
+                    color='filial',
+                    title=None,
+                    labels={'data': 'Período', 'valor_total': 'Custo Total (R$)', 'filial': 'Filial'},
+                    markers=True,
+                    hover_data={'filial': True}
+                )
                 
-                for filial in df_pivot.columns[1:]: # Pula a coluna 'data'
-                    valor_formatado = format_BRL(row[filial])
-                    hover_text += f"<b>{filial}:</b> {valor_formatado}<br>"
+                fig_line.update_layout(
+                    hovermode='x unified',
+                    xaxis_title=None,
+                    yaxis_title="Custo Total (R$)",
+                    legend_title_text='Filial',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)'
+                )
                 
-                tooltip_texts.append(hover_text)
-            
-            df_pivot['tooltip_text'] = tooltip_texts
+                fig_line.update_traces(
+                    hovertemplate='<b>%{customdata[0]}:</b> R$ %{y:,.2f}<extra></extra>'
+                )
 
-            # --- ETAPA 3: Criar o gráfico ---
-            fig_line = px.line(
-                df_pivot,
-                x='data',
-                y=df_pivot.columns[1:-1],
-                title='Evolução Diária do Custo de HE por Filial',
-                labels={'data': 'Data', 'value': 'Custo Total (R$)', 'variable': 'Filial'},
-                markers=True,
-                color_discrete_sequence=px.colors.qualitative.Plotly
-            )
+            else:
+                custo_diario_filial = df_filtrado.groupby('data')['valor_total'].sum().reset_index()
 
-            # --- ETAPA 4: Aprimorar Layout e Tooltip ---
-            fig_line.update_layout(
-                title_x=0.5,
-                xaxis_title="Período",
-                yaxis_title="Custo Total (R$)",
-                legend_title_text='Filial',
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
-            )
+                fig_line = px.line(
+                    custo_diario_filial,
+                    x='data',
+                    y='valor_total',
+                    title=f"Evolução Diária do Custo - {filial_selecionada_nome}",
+                    labels={'data': 'Período', 'valor_total': 'Custo Total (R$)'},
+                    markers=True
+                )
+                
+                fig_line.update_layout(
+                    title_x=0.5,
+                    xaxis_title=None,
+                    yaxis_title="Custo Total (R$)",
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    hovermode='x unified'
+                )
 
-            fig_line.update_traces(
-                customdata=df_pivot['tooltip_text'],
-                hovertemplate='%{customdata}<extra></extra>'
-            )
+                fig_line.update_traces(
+                    hovertemplate=f'<b>{filial_selecionada_nome}:</b> R$ %{{y:,.2f}}<extra></extra>'
+                )
             
             st.plotly_chart(fig_line, use_container_width=True)
 
