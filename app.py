@@ -509,30 +509,28 @@ def run_dashboard():
                     custo_por_cargo,
                     x='cargo',
                     y='valor_total',
-                    title=None,
+                    title='Custo Total de Horas Extras por Cargo',
                     labels={'cargo': 'Cargo', 'valor_total': 'Custo Total (R$)'},
-                    text='valor_formatado', # Mantido para alimentar o hovertemplate
-                    color_discrete_sequence=px.colors.qualitative.Plotly
+                    text_auto='.2s',
+                    color_discrete_sequence=px.colors.qualitative.Plotly,  # Paleta de cores profissional
+                    text='valor_formatado'
                 )
 
+                # --- Aprimoramentos do Layout e Tooltip ---
                 fig_bar.update_layout(
-                    title_font=dict(family="Arial, sans-serif", size=16, color="grey"),
-                    title_x=0.5,
-                    hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial, sans-serif", font_color="black"),
-                    hovermode='closest',
-                    showlegend=False,
-                    xaxis_title=None,
+                    title_x=0.5,  # Centraliza o título
+                    xaxis_title=None,  # Remove o título do eixo x para um look mais limpo
                     yaxis_title="Custo Total (R$)",
-                    plot_bgcolor='rgba(0,0,0,0)',
+                    legend_title_text='Cargo',
+                    plot_bgcolor='rgba(0,0,0,0)',  # Fundo transparente
                     paper_bgcolor='rgba(0,0,0,0)',
-                    margin=dict(l=40, r=40, t=20, b=40)
+                    margin=dict(l=40, r=40, t=40, b=40)
                 )
-                
                 fig_bar.update_traces(
-                    texttemplate='%{y:.2s}', # Formato para 'k' (mil) etc.
                     textposition='outside',
+                    # Personaliza o que aparece ao passar o mouse
                     hovertemplate='<b>Cargo:</b> %{x}<br><b>Custo Total:</b> %{text}<extra></extra>'
-                )               
+                )
                 selected_points = plotly_events(fig_bar, click_event=True, key="bar_chart_clicks")
 
                 if selected_points:
