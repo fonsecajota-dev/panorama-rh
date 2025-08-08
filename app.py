@@ -27,6 +27,44 @@ except Exception as e:
     st.error(f"Erro ao conectar ao banco de dados: {e}")
     engine = None
 
+def reset_app_state(engine):
+    """
+    Função otimizada que recarrega APENAS as anotações do banco,
+    refaz o merge com os dados principais em memória e atualiza a tela.
+    """
+    # 1. Limpa o cache APENAS da função que busca no banco.
+    st.cache_data.clear() # Limpa o cache de todas as funções, incluindo a do banco.
+    
+    # 2. Pega o DataFrame principal que já está carregado na sessão
+    if 'df_principal' in st.session_state:
+        df_principal_antigo = st.session_state['df_principal']
+        
+        # 3. Re-busca os dados do banco (a função será executada pois o cache foi limpo)
+        df_anotacoes_novo, df_contratacoes_novo = carregar_dados_banco(engine)
+
+        # 4. Refaz o merge com as anotações atualizadas
+        # Remove colunas de anotações antigas para evitar conflitos no merge
+        colunas_anotacao = ['texto_anotacao', 'nome_usuario', 'categoria', 'justificativa']
+        df_sem_anotacoes = df_principal_antigo.drop(columns=[col for col in colunas_anotacao if col in df_principal_antigo.columns])
+        
+        df_principal_atualizado = pd.merge(df_sem_anotacoes, df_anotacoes_novo, on='id_registro_original', how='left')
+        
+        # Garante que colunas de anotação não tenham valores nulos (NaN)
+        for col in colunas_anotacao:
+            if col in df_principal_atualizado.columns:
+                df_principal_atualizado[col] = df_principal_atualizado[col].fillna('')
+
+        # 5. Atualiza o DataFrame principal e de contratações na sessão
+        st.session_state['df_principal'] = df_principal_atualizado
+        st.session_state['df_contratacoes'] = df_contratacoes_novo
+        
+        # 6. Limpa o estado específico da tabela de anotações para evitar inconsistências
+        if 'df_anotacao_original_indexed' in st.session_state:
+            del st.session_state['df_anotacao_original_indexed']
+
+    # 7. Recarrega a página
+    st.rerun()
+
 # --- Funções de Segurança e Conexão ---
 def verify_password(plain_password: str, hashed_password_from_db: bytes) -> bool:
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password_from_db)
@@ -188,8 +226,8 @@ def carregar_dados_banco(_engine):
     try:
         with _engine.connect() as conn:
             # Anotações
-            query_anotacoes = text("SELECT id_registro_original, texto_anotacao, nome_usuario FROM anotacoes")
-            df_anotacoes = pd.DataFrame(conn.execute(query_anotacoes).fetchall(), columns=['id_registro_original', 'texto_anotacao', 'nome_usuario'])
+            query_anotacoes = text("SELECT id_registro_original, texto_anotacao, nome_usuario, categoria, justificativa FROM anotacoes")
+            df_anotacoes = pd.DataFrame(conn.execute(query_anotacoes).fetchall(), columns=['id_registro_original', 'texto_anotacao', 'nome_usuario', 'categoria', 'justificativa'])
 
             # Contratações
             query_contratacoes = text("""
@@ -234,9 +272,13 @@ def carregar_e_processar_dados_iniciais(_gs_client, _engine, nome_planilha):
         df = df_horas.copy()
         df['texto_anotacao'] = ''
         df['nome_usuario'] = None
-        
+        df['categoria'] = ''
+        df['justificativa'] = ''
+
     df['texto_anotacao'] = df['texto_anotacao'].fillna('')
     df['nome_usuario'] = df['nome_usuario'].fillna('')
+    df['categoria'] = df['categoria'].fillna('')
+    df['justificativa'] = df['justificativa'].fillna('')
     df = df.loc[:, ~df.columns.duplicated()]
 
     def determinar_periodo_comercial(data):
@@ -616,19 +658,6 @@ def run_dashboard():
         st.markdown("---")
         st.markdown("#### 📝 Tabela de Registros e Anotações")
 
-        # Verifica se o dataframe filtrado (que respeita a filial) não está vazio
-        df_com_valor = df_filtrado[df_filtrado['valor_total'] > 0]
-        if not df_com_valor.empty:
-            # Encontra a data do último registro para a filial/período selecionado
-            ultimo_registro_data = df_com_valor['data'].max().strftime('%d/%m/%Y')
-            
-            # Define o nome da filial para exibição na mensagem
-            nome_filial_display = filial_selecionada_nome if filial_selecionada_nome != 'Todas' else 'todas as filiais'
-            
-            # Exibe a informação usando st.caption para um texto mais sutil
-            st.caption(f"ℹ️ Último registro para **{nome_filial_display}** no período selecionado: **{ultimo_registro_data}**")
-
-        # Filtros para a seção de anotações
         col_filtro_data, col_filtro_check = st.columns([1.5, 3])
         with col_filtro_data:
             data_anotacao_filtro = st.date_input(
@@ -643,13 +672,9 @@ def run_dashboard():
                 key="anotacao_marcar_todos_check"
             )        
 
-        # --- LÓGICA DE FILTRAGEM CONDICIONAL ---
         if marcar_todos:
-            # Se marcado, usa o df_filtrado que já respeita os filtros principais (ano, mês, filial)
             df_para_anotar = df_filtrado[df_filtrado['valor_total'] > 0].copy()
-            st.info("Exibindo todos os registros para o período e filial selecionados nos filtros principais.")
         else:
-            # Se desmarcado, aplica o filtro de data específico
             df_para_anotar = df_filtrado[
                 (df_filtrado['data'].dt.date == data_anotacao_filtro) & 
                 (df_filtrado['valor_total'] > 0)
@@ -658,117 +683,104 @@ def run_dashboard():
         if df_para_anotar.empty:
             st.warning(f"Nenhum registro encontrado para a data **{data_anotacao_filtro.strftime('%d/%m/%Y')}** com os filtros principais selecionados.")
         else:
-            # --- Início da Lógica de Download ---
-            
-            # 1. Prepara o DataFrame para download a partir dos dados já filtrados
             df_para_download = df_para_anotar[[
-                'data', 'nome', 'cargo', 'qtd_he_50%', 'qtd_he_100%', 'valor_total', 'texto_anotacao', 'nome_usuario'
+                'data', 'nome', 'cargo', 'qtd_he_50%', 'qtd_he_100%', 'valor_total', 'categoria', 'justificativa', 'nome_usuario'
             ]].copy()
-            
-            # 2. Renomeia as colunas para o formato final do relatório
             df_para_download = df_para_download.rename(columns={
-                'data': 'Data',
-                'nome': 'Colaborador',
-                'cargo': 'Cargo',
-                'qtd_he_50%': 'HE 50%',
-                'qtd_he_100%': 'HE 100%',
-                'valor_total': 'Valor Total (R$)',
-                'texto_anotacao': 'Anotação',
-                'nome_usuario': 'Gestor Responsavel'
+                'data': 'Data', 'nome': 'Colaborador', 'cargo': 'Cargo', 'qtd_he_50%': 'HE 50%',
+                'qtd_he_100%': 'HE 100%', 'valor_total': 'Valor Total (R$)', 'categoria': 'Categoria',
+                'justificativa': 'Justificativa', 'nome_usuario': 'Gestor Responsavel'
             })
-            
-            # 3. Garante a ordem exata das colunas
-            df_para_download = df_para_download[[
-                'Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)', 'Anotação', 'Gestor Responsavel'
-            ]]
-
-            # 4. Formata a coluna de Data
+            df_para_download = df_para_download[['Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)', 'Categoria', 'Justificativa', 'Gestor Responsavel']]
             df_para_download['Data'] = pd.to_datetime(df_para_download['Data']).dt.strftime('%d/%m/%Y')
             df_para_download['Valor Total (R$)'] = df_para_download['Valor Total (R$)'].apply(format_BRL)
 
-            # 5. Exibe o botão de download
             st.download_button(
-                label="📥 Baixar Relatório Filtrado (.csv)",
-                data=converte_df_para_csv(df_para_download),
-                file_name=f"relatorio_anotacoes_{data_anotacao_filtro.strftime('%d/%m/%Y')}.csv",
-                mime='text/csv',
-                help=f"Baixa os registros do dia {data_anotacao_filtro.strftime('%d/%m/%Y')} em formato CSV"
+                label="📥 Baixar Relatório Filtrado (.csv)", data=converte_df_para_csv(df_para_download),
+                file_name=f"relatorio_anotacoes_{data_anotacao_filtro.strftime('%d/%m/%Y')}.csv", mime='text/csv'
             )
-            # --- Fim da Lógica de Download ---
 
-            # Lógica para exibir e editar a tabela
+            # --- INÍCIO DA LÓGICA CORRIGIDA ---
             df_editor_pronto = df_para_anotar.copy()
+            
+            # 1. Renomeia colunas para exibição amigável
             df_editor_pronto.rename(columns={
-                'texto_anotacao': 'Anotação',
-                'nome': 'Colaborador',
-                'data': 'Data',
-                'qtd_he_50%': 'HE 50%',
-                'qtd_he_100%': 'HE 100%',
-                'cargo': 'Cargo',
-                'valor_total': 'Valor Total (R$)'
+                'categoria': 'Categoria', 'justificativa': 'Justificativa', 'nome': 'Colaborador',
+                'data': 'Data', 'qtd_he_50%': 'HE 50%', 'qtd_he_100%': 'HE 100%',
+                'cargo': 'Cargo', 'valor_total': 'Valor Total (R$)'
             }, inplace=True)
+            
+            # 2. Formata as colunas e preenche nulos
             df_editor_pronto['Data'] = pd.to_datetime(df_editor_pronto['Data']).dt.strftime('%d/%m/%Y')
             df_editor_pronto['Valor Total (R$)'] = df_editor_pronto['Valor Total (R$)'].apply(format_BRL)
-            colunas_para_exibir = ['Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)', 'Anotação']
+            df_editor_pronto['Categoria'] = df_editor_pronto['Categoria'].fillna('')
+            df_editor_pronto['Justificativa'] = df_editor_pronto['Justificativa'].fillna('')
 
-            if 'df_anotacao_original' not in st.session_state or st.session_state.df_anotacao_original.empty or pd.to_datetime(st.session_state.df_anotacao_original['data'].iloc[0]).date() != data_anotacao_filtro:
-                st.session_state.df_anotacao_original = df_para_anotar.copy()
+            # 3. **PONTO CRÍTICO**: Define o ID único como índice do DataFrame
+            df_editor_pronto.set_index('id_registro_original', inplace=True)
+            
+            # 4. Guarda uma cópia do estado original, já com o índice correto, para comparação
+            st.session_state['df_anotacao_original_indexed'] = df_editor_pronto.copy()
+
+            colunas_para_exibir = ['Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)', 'Categoria', 'Justificativa']
+            opcoes_categoria = ["", "Absenteísmo", "Quadro de colaboradores", "Cliente", "Operações", "Outros"]
 
             df_editado = st.data_editor(
                 df_editor_pronto[colunas_para_exibir],
                 use_container_width=True, hide_index=True,
-                disabled=[col for col in colunas_para_exibir if col != 'Anotação'],
+                column_config={
+                    "Categoria": st.column_config.SelectboxColumn("Motivo da Anotação", options=opcoes_categoria),
+                    "Justificativa": st.column_config.TextColumn("Justificativa (Obrigatório para 'Outros')")
+                },
+                disabled=['Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)'],
                 key="data_editor_anotacoes"
             )
 
             if st.button("✔️ Salvar Anotações Editadas", use_container_width=True, type="primary"):
                 try:
-                    df_original_dia = st.session_state.df_anotacao_original[['id_registro_original', 'nome', 'texto_anotacao']].copy()
-                    df_original_dia.rename(columns={'nome': 'Colaborador'}, inplace=True)
-                    df_editado_usuario = df_editado.copy()
+                    df_original_indexed = st.session_state['df_anotacao_original_indexed']
+                    
+                    # 5. Restaura o índice original no DataFrame editado
+                    df_editado.index = df_original_indexed.index
 
-                    df_comparacao = pd.merge(df_editado_usuario, df_original_dia, on='Colaborador', how='left')
-                    alteracoes = df_comparacao[df_comparacao['Anotação'] != df_comparacao['texto_anotacao']].copy()
+                    # 6. Compara os DataFrames (agora alinhados pelo índice único) para encontrar as alterações
+                    alteracoes = df_editado[
+                        (df_editado['Categoria'].fillna('') != df_original_indexed['Categoria'].fillna('')) |
+                        (df_editado['Justificativa'].fillna('') != df_original_indexed['Justificativa'].fillna(''))
+                    ]
 
-                    registros_para_deletar = alteracoes[alteracoes['Anotação'].str.strip() == '']
-                    registros_para_upsert = alteracoes[alteracoes['Anotação'].str.strip() != '']
-
-                    if not registros_para_deletar.empty or not registros_para_upsert.empty:
+                    # Validação (permanece a mesma)
+                    erro_outros = alteracoes[(alteracoes['Categoria'] == 'Outros') & (alteracoes['Justificativa'].fillna('').str.strip() == '')]
+                    if not erro_outros.empty:
+                        st.error("❌ Erro: Se a categoria 'Outros' for selecionada, o campo 'Justificativa' é obrigatório.")
+                    
+                    elif not alteracoes.empty:
                         with st.spinner("Salvando alterações..."), engine.begin() as conn:
-                            # 1. Deleta os registros que ficaram em branco
-                            if not registros_para_deletar.empty:
-                                for _, linha in registros_para_deletar.iterrows():
-                                    query_delete = text("DELETE FROM anotacoes WHERE id_registro_original = :id")
-                                    conn.execute(query_delete, {"id": linha['id_registro_original']})
+                            # 7. Itera sobre as linhas alteradas. O índice (id_registro) agora é o ID correto!
+                            for id_registro, linha in alteracoes.iterrows():
+                                categoria_val = (linha['Categoria'] or "").strip()
+                                justificativa_val = (linha['Justificativa'] or "").strip()
 
-                            # 2. Insere ou atualiza os registros com conteúdo
-                            if not registros_para_upsert.empty:
-                                for _, linha in registros_para_upsert.iterrows():
-                                    query_upsert = text("""
-                                        INSERT INTO anotacoes (id_registro_original, nome_usuario, texto_anotacao) VALUES (:id, :usuario, :texto)
-                                        ON CONFLICT (id_registro_original) DO UPDATE SET texto_anotacao = EXCLUDED.texto_anotacao, nome_usuario = EXCLUDED.nome_usuario, data_modificacao = NOW();
+                                if not categoria_val and not justificativa_val:
+                                    query = text("DELETE FROM anotacoes WHERE id_registro_original = :id")
+                                else:
+                                    query = text("""
+                                        INSERT INTO anotacoes (id_registro_original, nome_usuario, categoria, justificativa) 
+                                        VALUES (:id, :usuario, :categoria, :justificativa)
+                                        ON CONFLICT (id_registro_original) DO UPDATE SET 
+                                            categoria = EXCLUDED.categoria, justificativa = EXCLUDED.justificativa, 
+                                            nome_usuario = EXCLUDED.nome_usuario, data_modificacao = NOW();
                                     """)
-                                    conn.execute(query_upsert, {
-                                        "id": linha['id_registro_original'],
-                                        "usuario": usuario_logado.get('nome', 'Usuário do Sistema'),
-                                        "texto": linha['Anotação']
-                                    })
-
-                        # Mensagem de sucesso
-                        msg_sucesso = []
-                        if not registros_para_upsert.empty:
-                            msg_sucesso.append(f"{len(registros_para_upsert)} anotações salvas/atualizadas")
-                        if not registros_para_deletar.empty:
-                            msg_sucesso.append(f"{len(registros_para_deletar)} anotações removidas")
-                        
-                        st.success(" e ".join(msg_sucesso) + "!")
-                        
-                        st.cache_data.clear()
-                        del st.session_state.df_anotacao_original
-                        st.rerun()
-
-                    elif not alteracoes.empty and not engine:
-                        st.error("Não foi possível salvar. A conexão com o banco de dados falhou.")
+                                
+                                conn.execute(query, {
+                                    "id": id_registro,
+                                    "usuario": usuario_logado.get('nome', 'Usuário do Sistema'),
+                                    "categoria": categoria_val,
+                                    "justificativa": justificativa_val
+                                })
+                       
+                        st.success(f"{len(alteracoes)} alterações foram salvas com sucesso!")
+                        reset_app_state(engine)
                     else:
                         st.info("Nenhuma alteração nas anotações foi detectada.")
                 except Exception as e:
