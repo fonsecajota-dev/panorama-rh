@@ -729,8 +729,8 @@ def run_dashboard():
                 df_editor_pronto[colunas_para_exibir],
                 use_container_width=True, hide_index=True,
                 column_config={
-                    "Categoria": st.column_config.SelectboxColumn("Motivo da Anotação", options=opcoes_categoria),
-                    "Justificativa": st.column_config.TextColumn("Justificativa (Obrigatório para 'Outros')")
+                    "Categoria": st.column_config.SelectboxColumn("Motivo", options=opcoes_categoria),
+                    "Justificativa": st.column_config.TextColumn("Justificativa (Obrigatória)")
                 },
                 disabled=['Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)'],
                 key="data_editor_anotacoes"
@@ -749,10 +749,11 @@ def run_dashboard():
                         (df_editado['Justificativa'].fillna('') != df_original_indexed['Justificativa'].fillna(''))
                     ]
 
-                    # Validação (permanece a mesma)
-                    erro_outros = alteracoes[(alteracoes['Categoria'] == 'Outros') & (alteracoes['Justificativa'].fillna('').str.strip() == '')]
-                    if not erro_outros.empty:
-                        st.error("❌ Erro: Se a categoria 'Outros' for selecionada, o campo 'Justificativa' é obrigatório.")
+                    # Validação: Justificativa é obrigatória para qualquer categoria escolhida
+                    erro_geral = alteracoes[(alteracoes['Categoria'].fillna('').str.strip() != '') & 
+                                            (alteracoes['Justificativa'].fillna('').str.strip() == '')]
+                    if not erro_geral.empty:
+                        st.error("❌ Erro: Toda anotação deve ter justificativa preenchida.")
                     
                     elif not alteracoes.empty:
                         with st.spinner("Salvando alterações..."), engine.begin() as conn:
@@ -868,3 +869,4 @@ if not get_logged_user():
         )
 else:
     run_dashboard()
+
