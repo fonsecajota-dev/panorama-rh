@@ -749,12 +749,20 @@ def run_dashboard():
                         (df_editado['Justificativa'].fillna('') != df_original_indexed['Justificativa'].fillna(''))
                     ]
 
-                    # Validação: Justificativa é obrigatória para qualquer categoria escolhida
-                    erro_geral = alteracoes[(alteracoes['Categoria'].fillna('').str.strip() != '') & 
-                                            (alteracoes['Justificativa'].fillna('').str.strip() == '')]
-                    if not erro_geral.empty:
-                        st.error("❌ Erro: Toda anotação deve ter justificativa preenchida.")
-                    
+                    # Validação: Ambos os campos devem estar preenchidos ou ambos vazios
+                    erro_categoria_sem_justificativa = alteracoes[
+                        (alteracoes['Categoria'].fillna('').str.strip() != '') &
+                        (alteracoes['Justificativa'].fillna('').str.strip() == '')
+                    ]
+
+                    erro_justificativa_sem_categoria = alteracoes[
+                        (alteracoes['Categoria'].fillna('').str.strip() == '') &
+                        (alteracoes['Justificativa'].fillna('').str.strip() != '')
+                    ]
+
+                    if not erro_categoria_sem_justificativa.empty or not erro_justificativa_sem_categoria.empty:
+                        st.error("❌ Erro: Categoria e Justificativa devem ser preenchidos juntos.")
+
                     elif not alteracoes.empty:
                         with st.spinner("Salvando alterações..."), engine.begin() as conn:
                             # 7. Itera sobre as linhas alteradas. O índice (id_registro) agora é o ID correto!
@@ -869,4 +877,5 @@ if not get_logged_user():
         )
 else:
     run_dashboard()
+
 
