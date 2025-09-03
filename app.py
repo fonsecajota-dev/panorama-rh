@@ -44,7 +44,7 @@ def reset_app_state(engine):
 
         # 4. Refaz o merge com as anotações atualizadas
         # Remove colunas de anotações antigas para evitar conflitos no merge
-        colunas_anotacao = ['texto_anotacao', 'nome_usuario', 'categoria', 'justificativa']
+        colunas_anotacao = ['nome_usuario', 'categoria', 'justificativa']
         df_sem_anotacoes = df_principal_antigo.drop(columns=[col for col in colunas_anotacao if col in df_principal_antigo.columns])
         
         df_principal_atualizado = pd.merge(df_sem_anotacoes, df_anotacoes_novo, on='id_registro_original', how='left')
@@ -97,6 +97,7 @@ def logout():
         del st.session_state['user']
     st.rerun()
 
+DEPARTAMENTOS_AUTORIZADOS_PARA_ACOES = ["gerencia", "master", "rh"]
 # ==============================================================================
 # CONFIGURAÇÃO DE FUNÇÕES AUXILIARES E DE CARREGAMENTO MODULAR
 # ==============================================================================
@@ -226,8 +227,8 @@ def carregar_dados_banco(_engine):
     try:
         with _engine.connect() as conn:
             # Anotações
-            query_anotacoes = text("SELECT id_registro_original, texto_anotacao, nome_usuario, categoria, justificativa FROM anotacoes")
-            df_anotacoes = pd.DataFrame(conn.execute(query_anotacoes).fetchall(), columns=['id_registro_original', 'texto_anotacao', 'nome_usuario', 'categoria', 'justificativa'])
+            query_anotacoes = text("SELECT id_registro_original, nome_usuario, categoria, justificativa FROM anotacoes")
+            df_anotacoes = pd.DataFrame(conn.execute(query_anotacoes).fetchall(), columns=['id_registro_original', 'nome_usuario', 'categoria', 'justificativa'])
 
             # Contratações
             query_contratacoes = text("""
@@ -270,12 +271,10 @@ def carregar_e_processar_dados_iniciais(_gs_client, _engine, nome_planilha):
         df = pd.merge(df_horas, df_anotacoes, on='id_registro_original', how='left')
     else:
         df = df_horas.copy()
-        df['texto_anotacao'] = ''
         df['nome_usuario'] = None
         df['categoria'] = ''
         df['justificativa'] = ''
 
-    df['texto_anotacao'] = df['texto_anotacao'].fillna('')
     df['nome_usuario'] = df['nome_usuario'].fillna('')
     df['categoria'] = df['categoria'].fillna('')
     df['justificativa'] = df['justificativa'].fillna('')
@@ -312,6 +311,7 @@ def run_dashboard():
     """, unsafe_allow_html=True)
 
     usuario_logado = get_logged_user()
+    departamento_usuario = usuario_logado.get("departamento", "").strip().lower() 
     NOME_DA_PLANILHA = "bdBANCO DE HORAS"
 
     # --- LÓGICA DE CARREGAMENTO ÚNICO COM st.session_state ---
@@ -695,10 +695,12 @@ def run_dashboard():
             df_para_download['Data'] = pd.to_datetime(df_para_download['Data']).dt.strftime('%d/%m/%Y')
             df_para_download['Valor Total (R$)'] = df_para_download['Valor Total (R$)'].apply(format_BRL)
 
-            st.download_button(
-                label="📥 Baixar Relatório Filtrado (.csv)", data=converte_df_para_csv(df_para_download),
-                file_name=f"relatorio_anotacoes_{data_anotacao_filtro.strftime('%d/%m/%Y')}.csv", mime='text/csv'
-            )
+            if departamento_usuario in DEPARTAMENTOS_AUTORIZADOS_PARA_ACOES:
+                st.download_button(
+                    label="📥 Baixar Relatório Filtrado (.csv)", data=converte_df_para_csv(df_para_download),
+                    file_name=f"relatorio_anotacoes_{data_anotacao_filtro.strftime('%d/%m/%Y')}.csv", mime='text/csv'
+                )
+            else:pass
 
             # --- INÍCIO DA LÓGICA CORRIGIDA ---
             df_editor_pronto = df_para_anotar.copy()
@@ -722,76 +724,127 @@ def run_dashboard():
             # 4. Guarda uma cópia do estado original, já com o índice correto, para comparação
             st.session_state['df_anotacao_original_indexed'] = df_editor_pronto.copy()
 
+            # identifica o usuário logado
+            usuario_atual = (usuario_logado or {}).get('nome', '').strip()
+
             colunas_para_exibir = ['Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)', 'Categoria', 'Justificativa']
             opcoes_categoria = ["", "Absenteísmo", "Quadro de colaboradores", "Cliente", "Operações", "Outros"]
 
-            df_editado = st.data_editor(
-                df_editor_pronto[colunas_para_exibir],
+            # Máscara do que é editável por este usuário (sem dono OU dono == usuário)
+            dono_atual_series = df_editor_pronto['nome_usuario'].fillna('')
+            mask_editavel = (dono_atual_series.str.strip() == '') | (
+                dono_atual_series.str.casefold() == usuario_atual.casefold()
+            )
+
+            df_meus = df_editor_pronto[mask_editavel].copy()
+            df_outros = df_editor_pronto[~mask_editavel].copy()
+
+            # Coluna informativa para visualização
+            def _fmt_exec(s):
+                s = (s or '').strip()
+                return s if s else '—'
+            df_meus['Executor'] = df_meus['nome_usuario'].apply(_fmt_exec)
+            df_outros['Executor'] = df_outros['nome_usuario'].apply(_fmt_exec)
+
+            colunas_para_exibir_expand = colunas_para_exibir
+
+            # Guardamos o "original" apenas das linhas editáveis para comparar ao salvar
+            st.session_state['df_anotacao_original_indexed_meus'] = df_meus.copy()
+
+            st.markdown("##### ✏️ Linhas editáveis ou sem justificativas")
+            df_editado_meus = st.data_editor(
+                df_meus[colunas_para_exibir_expand],
                 use_container_width=True, hide_index=True,
                 column_config={
-                    "Categoria": st.column_config.SelectboxColumn("Motivo", options=opcoes_categoria),
-                    "Justificativa": st.column_config.TextColumn("Justificativa (Obrigatória)")
+                    "Categoria": st.column_config.SelectboxColumn("Motivo da Anotação", options=opcoes_categoria),
+                    "Justificativa": st.column_config.TextColumn("Justificativa (Obrigatória)"),
+                    "Executor": st.column_config.TextColumn("Gestor Responsável")
                 },
+                # Bloqueia tudo que não seja os campos de anotação
                 disabled=['Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)'],
-                key="data_editor_anotacoes"
+                key="data_editor_anotacoes_meus"
+            )
+
+            st.markdown("##### 🔒 Linhas de outros gestores (somente leitura)")
+            st.data_editor(
+                df_outros[colunas_para_exibir_expand],
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "Categoria": st.column_config.SelectboxColumn("Motivo da Anotação", options=opcoes_categoria),
+                    "Justificativa": st.column_config.TextColumn("Justificativa"),
+                    "Executor": st.column_config.TextColumn("Gestor Responsável")
+                },
+                disabled=True,
+                key="data_editor_anotacoes_outros"
             )
 
             if st.button("✔️ Salvar Anotações Editadas", use_container_width=True, type="primary"):
                 try:
-                    df_original_indexed = st.session_state['df_anotacao_original_indexed']
-                    
-                    # 5. Restaura o índice original no DataFrame editado
-                    df_editado.index = df_original_indexed.index
+                    # Originais (somente as linhas que este usuário podia editar)
+                    df_original_meus = st.session_state['df_anotacao_original_indexed_meus'].copy()
+                    df_editado_meus = df_editado_meus.copy()
 
-                    # 6. Compara os DataFrames (agora alinhados pelo índice único) para encontrar as alterações
-                    alteracoes = df_editado[
-                        (df_editado['Categoria'].fillna('') != df_original_indexed['Categoria'].fillna('')) |
-                        (df_editado['Justificativa'].fillna('') != df_original_indexed['Justificativa'].fillna(''))
+                    # Alinha índices (garantia)
+                    df_editado_meus.index = df_original_meus.index
+
+                    # Diferenças somente nas linhas "minhas"
+                    alteracoes = df_editado_meus[
+                        (df_editado_meus['Categoria'].fillna('') != df_original_meus['Categoria'].fillna('')) |
+                        (df_editado_meus['Justificativa'].fillna('') != df_original_meus['Justificativa'].fillna(''))
                     ]
 
-                    # Validação: Ambos os campos devem estar preenchidos ou ambos vazios
-                    erro_categoria_sem_justificativa = alteracoes[
-                        (alteracoes['Categoria'].fillna('').str.strip() != '') &
-                        (alteracoes['Justificativa'].fillna('').str.strip() == '')
-                    ]
+                    # ✅ Regra: ou preenche as duas, ou deixa as duas vazias
+                    tem_categoria = alteracoes['Categoria'].fillna('').str.strip() != ''
+                    tem_just = alteracoes['Justificativa'].fillna('').str.strip() != ''
+                    inconsistentes = alteracoes[tem_categoria ^ tem_just]  # XOR
 
-                    erro_justificativa_sem_categoria = alteracoes[
-                        (alteracoes['Categoria'].fillna('').str.strip() == '') &
-                        (alteracoes['Justificativa'].fillna('').str.strip() != '')
-                    ]
+                    if not inconsistentes.empty:
+                        st.error("❌ Erro: Se preencher **Categoria**, também precisa preencher **Justificativa** (e vice-versa).")
+                        st.stop()
 
-                    if not erro_categoria_sem_justificativa.empty or not erro_justificativa_sem_categoria.empty:
-                        st.error("❌ Erro: Categoria e Justificativa devem ser preenchidos juntos.")
+                    # 🔒 Blindagem extra: se alguém adulterou o front e tentou mandar id que não é dele,
+                    # filtramos de novo comparando com o DF completo original.
+                    df_original_full = st.session_state['df_anotacao_original_indexed']
+                    donos = df_original_full.loc[alteracoes.index, 'nome_usuario'].fillna('')
+                    permitidas_mask = (donos.str.strip() == '') | (donos.str.casefold() == usuario_atual.casefold())
+                    alteracoes_permitidas = alteracoes[permitidas_mask]
 
-                    elif not alteracoes.empty:
+                    # Se houve tentativa de editar o que não podia, avisamos e ignoramos
+                    if len(alteracoes_permitidas) < len(alteracoes):
+                        st.warning("Algumas alterações foram ignoradas por pertencerem a outro executor. 🔒")
+
+                    if not alteracoes_permitidas.empty:
                         with st.spinner("Salvando alterações..."), engine.begin() as conn:
-                            # 7. Itera sobre as linhas alteradas. O índice (id_registro) agora é o ID correto!
-                            for id_registro, linha in alteracoes.iterrows():
+                            for id_registro, linha in alteracoes_permitidas.iterrows():
                                 categoria_val = (linha['Categoria'] or "").strip()
                                 justificativa_val = (linha['Justificativa'] or "").strip()
 
                                 if not categoria_val and not justificativa_val:
+                                    # Ambas vazias => apaga a anotação
                                     query = text("DELETE FROM anotacoes WHERE id_registro_original = :id")
+                                    conn.execute(query, {"id": id_registro})
                                 else:
+                                    # Upsert com nome do executor atual
                                     query = text("""
                                         INSERT INTO anotacoes (id_registro_original, nome_usuario, categoria, justificativa) 
                                         VALUES (:id, :usuario, :categoria, :justificativa)
                                         ON CONFLICT (id_registro_original) DO UPDATE SET 
-                                            categoria = EXCLUDED.categoria, justificativa = EXCLUDED.justificativa, 
-                                            nome_usuario = EXCLUDED.nome_usuario, data_modificacao = NOW();
+                                            categoria = EXCLUDED.categoria,
+                                            justificativa = EXCLUDED.justificativa,
+                                            nome_usuario = EXCLUDED.nome_usuario,
+                                            data_modificacao = NOW();
                                     """)
-                                
-                                conn.execute(query, {
-                                    "id": id_registro,
-                                    "usuario": usuario_logado.get('nome', 'Usuário do Sistema'),
-                                    "categoria": categoria_val,
-                                    "justificativa": justificativa_val
-                                })
-                       
-                        st.success(f"{len(alteracoes)} alterações foram salvas com sucesso!")
+                                    conn.execute(query, {
+                                        "id": id_registro,
+                                        "usuario": usuario_atual or 'Usuário do Sistema',
+                                        "categoria": categoria_val,
+                                        "justificativa": justificativa_val
+                                    })
+
+                        st.success(f"{len(alteracoes_permitidas)} alterações foram salvas com sucesso!")
                         reset_app_state(engine)
                     else:
-                        st.info("Nenhuma alteração nas anotações foi detectada.")
+                        st.info("Nenhuma alteração válida para salvar.")
                 except Exception as e:
                     st.error(f"Ocorreu um erro ao salvar as alterações: {e}")
 
@@ -877,5 +930,3 @@ if not get_logged_user():
         )
 else:
     run_dashboard()
-
-
