@@ -97,7 +97,7 @@ def logout():
         del st.session_state['user']
     st.rerun()
 
-DEPARTAMENTOS_AUTORIZADOS_PARA_ACOES = ["gerencia", "master", "rh"]
+DEPARTAMENTOS_AUTORIZADOS_PARA_ACOES = ["gerencia", "master", "rh", "diretoria"]
 # ==============================================================================
 # CONFIGURAÇÃO DE FUNÇÕES AUXILIARES E DE CARREGAMENTO MODULAR
 # ==============================================================================
@@ -930,3 +930,4 @@ if not get_logged_user():
         )
 else:
     run_dashboard()
+
