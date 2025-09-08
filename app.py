@@ -392,7 +392,7 @@ def run_dashboard():
         data_inicio_info = (data_fim_info - pd.DateOffset(months=1)).replace(day=21)
         info_periodo = f"Período de **{data_inicio_info.strftime('%d/%m/%Y')}** a **{data_fim_info.strftime('%d/%m/%Y')}**."
 
-    mapa_filiais = {'Guarulhos': 'Guarulhos', 'Valinhos': 'Valinhos', 'Ribeirao': 'Ribeirão', 'Marilia': 'Marília', 'Jacarei': 'Jacareí'}
+    mapa_filiais = {'Guarulhos': 'Guarulhos', 'Valinhos': 'Valinhos', 'Ribeirao': 'Ribeirão', 'Marilia': 'Marília', 'Jacareí': 'Jacareí'}
     filiais_disponiveis = sorted(df_periodo['filial'].unique().tolist())
     nomes_filiais_display = ['Todas'] + [mapa_filiais.get(f, f) for f in filiais_disponiveis]
     filial_selecionada_nome = st.sidebar.selectbox("**Filial**", nomes_filiais_display)
@@ -930,6 +930,7 @@ if not get_logged_user():
         )
 else:
     run_dashboard()
+
 
 
 
