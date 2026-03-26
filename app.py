@@ -1,4 +1,4 @@
-# app.py (Versão Otimizada)
+# app.py (Versão Refatorada - Design System NT Transportes)
 
 import bcrypt
 import locale
@@ -6,20 +6,102 @@ import gspread
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime, date
 from sqlalchemy import create_engine, text
-from streamlit_plotly_events import plotly_events
+from zoneinfo import ZoneInfo
+import os
 
 # ==============================================================================
-# CONFIGURAÇÃO DA PÁGINA E AUTENTICAÇÃO
+# 🎨 DESIGN TOKENS E CONFIGURAÇÃO DA PÁGINA
 # ==============================================================================
 st.set_page_config(
     page_title="Recursos Humanos - NT Transportes",
     page_icon="👥",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# --- Conexão com Banco de Dados ---
+C = {
+    "deep":   "#0D1B2A",
+    "mid":    "#1E3A5F",
+    "cyan":   "#00B4D8",
+    "green":  "#2DC653",
+    "amber":  "#F4A261",
+    "red":    "#E63946",
+    "sky":    "#8ECAE6",
+    "muted":  "#5C677D",
+    "border": "#E4E9F0",
+}
+
+# --- CSS Global ---
+st.markdown(
+    f"""<style>
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;600;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap');
+    html, body, [class*="css"] {{ font-family: 'IBM Plex Sans', sans-serif !important; }}
+    
+    /* Customização da Sidebar */
+    [data-testid="stSidebar"] {{ background-color: #F8F9FA !important; border-right: 1px solid {C['border']} !important; }}
+    [data-testid="stSidebar"] hr {{ border-color: {C['border']} !important; margin: 1.2rem 0 !important; }}
+    
+    /* Customização de Expanders */
+    div[data-testid="stExpander"] summary {{
+        background-color: #f8f9fa; border: 1px solid {C['border']}; border-radius: 8px;
+        padding: 12px; font-size: 0.95rem; font-weight: 600; color: {C['mid']};
+    }}
+    div[data-testid="stExpander"] summary:hover {{ background-color: #f1f3f5; }}
+    </style>""",
+    unsafe_allow_html=True,
+)
+
+# ==============================================================================
+# 🛠️ HELPERS DE INTERFACE (UI)
+# ==============================================================================
+def kpi_card(col, icon: str, label: str, value: str, sub: str = "", accent: str = "#00B4D8"):
+    col.markdown(
+        f"""<div style="background:#fff; border:1px solid {C['border']}; 
+                border-top:4px solid {accent}; border-radius:12px; 
+                padding:18px 20px 14px 20px; height: 100%;
+                box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+            <div style="font-size:1.25rem; margin-bottom:4px;">{icon}</div>
+            <div style="font-size:0.67rem; font-weight:700; letter-spacing:0.07em; 
+                        text-transform:uppercase; color:{C['muted']}; margin-bottom:5px;">
+                {label}</div>
+            <div style="font-size:1.45rem; font-weight:700; color:{C['deep']}; 
+                        font-family:'IBM Plex Mono',monospace; line-height:1.15;">
+                {value}</div>
+            <div style="font-size:0.75rem; color:{C['muted']}; margin-top:8px;">{sub}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+def sec(title: str):
+    st.markdown(
+        f"""<div style="font-size:0.67rem; font-weight:800; letter-spacing:0.1em; 
+                text-transform:uppercase; color:{C['muted']}; 
+                border-bottom:2px solid {C['border']}; 
+                padding-bottom:7px; margin:32px 0 16px 0;">{title}</div>""",
+        unsafe_allow_html=True,
+    )
+
+def plotly_layout(**kw) -> dict:
+    base = dict(
+        font=dict(family="IBM Plex Sans, sans-serif", color=C["deep"]),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        hovermode="x unified",
+        separators=",.",
+        margin=dict(t=44, b=36, l=40, r=20),
+        xaxis=dict(showgrid=False, linecolor=C["border"]),
+        yaxis=dict(gridcolor="#f0f0f5", linecolor=C["border"]),
+        colorway=[C["cyan"], C["mid"], C["amber"], C["red"], C["sky"], C["green"]],
+    )
+    base.update(kw)
+    return base
+
+# ==============================================================================
+# 🔐 AUTENTICAÇÃO E CONEXÃO DB
+# ==============================================================================
 try:
     connection_string = st.secrets["supabase"]["connection_string"]
     engine = create_engine(connection_string)
@@ -27,66 +109,23 @@ except Exception as e:
     st.error(f"Erro ao conectar ao banco de dados: {e}")
     engine = None
 
-def reset_app_state(engine):
-    """
-    Função otimizada que recarrega APENAS as anotações do banco,
-    refaz o merge com os dados principais em memória e atualiza a tela.
-    """
-    # 1. Limpa o cache APENAS da função que busca no banco.
-    st.cache_data.clear() # Limpa o cache de todas as funções, incluindo a do banco.
-    
-    # 2. Pega o DataFrame principal que já está carregado na sessão
-    if 'df_principal' in st.session_state:
-        df_principal_antigo = st.session_state['df_principal']
-        
-        # 3. Re-busca os dados do banco (a função será executada pois o cache foi limpo)
-        df_anotacoes_novo, df_contratacoes_novo = carregar_dados_banco(engine)
-
-        # 4. Refaz o merge com as anotações atualizadas
-        # Remove colunas de anotações antigas para evitar conflitos no merge
-        colunas_anotacao = ['nome_usuario', 'categoria', 'justificativa']
-        df_sem_anotacoes = df_principal_antigo.drop(columns=[col for col in colunas_anotacao if col in df_principal_antigo.columns])
-        
-        df_principal_atualizado = pd.merge(df_sem_anotacoes, df_anotacoes_novo, on='id_registro_original', how='left')
-        
-        # Garante que colunas de anotação não tenham valores nulos (NaN)
-        for col in colunas_anotacao:
-            if col in df_principal_atualizado.columns:
-                df_principal_atualizado[col] = df_principal_atualizado[col].fillna('')
-
-        # 5. Atualiza o DataFrame principal e de contratações na sessão
-        st.session_state['df_principal'] = df_principal_atualizado
-        st.session_state['df_contratacoes'] = df_contratacoes_novo
-        
-        # 6. Limpa o estado específico da tabela de anotações para evitar inconsistências
-        if 'df_anotacao_original_indexed' in st.session_state:
-            del st.session_state['df_anotacao_original_indexed']
-
-    # 7. Recarrega a página
-    st.rerun()
-
-# --- Funções de Segurança e Conexão ---
 def verify_password(plain_password: str, hashed_password_from_db: bytes) -> bool:
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password_from_db)
 
 def authenticate_user(email, senha):
     if not email or not senha: return None
-    if not engine:
-        st.error("Conexão com o banco de dados não estabelecida.")
-        return None
+    if not engine: return None
     try:
         with engine.connect() as conn:
             query = text("SELECT id, nome, email, senha, departamento FROM usuarios WHERE email = :email")
             result = conn.execute(query, {"email": email}).fetchone()
             if result:
                 user_data = dict(result._mapping)
-                hashed_password_bytes = user_data['senha'].encode('utf-8')
-                if verify_password(senha, hashed_password_bytes):
+                if verify_password(senha, user_data['senha'].encode('utf-8')):
                     del user_data['senha']
                     return user_data
     except Exception as e:
         st.error(f"Erro na autenticação: {e}")
-        return None
     return None
 
 def get_logged_user():
@@ -97,10 +136,28 @@ def logout():
         del st.session_state['user']
     st.rerun()
 
-DEPARTAMENTOS_AUTORIZADOS_PARA_ACOES = ["gerencia", "master", "rh", "diretoria"]
+DEPARTAMENTOS_AUTORIZADOS_PARA_ACOES = ["gerencia", "master", "rh"]
+
 # ==============================================================================
-# CONFIGURAÇÃO DE FUNÇÕES AUXILIARES E DE CARREGAMENTO MODULAR
+# 🔄 FUNÇÕES DE DADOS (PANDAS E DB)
 # ==============================================================================
+def reset_app_state(engine):
+    st.cache_data.clear() 
+    if 'df_principal' in st.session_state:
+        df_principal_antigo = st.session_state['df_principal']
+        df_anotacoes_novo, df_contratacoes_novo = carregar_dados_banco(engine)
+        colunas_anotacao = ['nome_usuario', 'categoria', 'justificativa']
+        df_sem_anotacoes = df_principal_antigo.drop(columns=[col for col in colunas_anotacao if col in df_principal_antigo.columns])
+        df_principal_atualizado = pd.merge(df_sem_anotacoes, df_anotacoes_novo, on='id_registro_original', how='left')
+        for col in colunas_anotacao:
+            if col in df_principal_atualizado.columns:
+                df_principal_atualizado[col] = df_principal_atualizado[col].fillna('')
+        st.session_state['df_principal'] = df_principal_atualizado
+        st.session_state['df_contratacoes'] = df_contratacoes_novo
+        if 'df_anotacao_original_indexed' in st.session_state:
+            del st.session_state['df_anotacao_original_indexed']
+    st.rerun()
+
 @st.cache_data
 def converte_df_para_csv(df):
     return df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
@@ -112,13 +169,13 @@ def converter_hora_para_decimal(tempo_str):
         partes = str(tempo_str).split(':')
         horas = int(partes[0]); minutos = int(partes[1]); segundos = int(partes[2]) if len(partes) > 2 else 0
         return horas + (minutos / 60) + (segundos / 3600)
-    except (ValueError, IndexError): return 0.0
+    except: return 0.0
 
 def format_BRL(valor):
     try:
         locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
         return locale.currency(valor, grouping=True, symbol=True)
-    except (ValueError, TypeError, locale.Error):
+    except:
         if isinstance(valor, (int, float)):
             return f"R$ {valor:_.2f}".replace('.', ',').replace('_', '.')
         return "R$ 0,00"
@@ -128,70 +185,46 @@ def format_horas_decimal(horas_decimais):
         if pd.isna(horas_decimais) or horas_decimais < 0.01: return "0:00h"
         horas_inteiras = int(horas_decimais)
         minutos = int((horas_decimais - horas_inteiras) * 60)
-        horas_formatadas = f"{horas_inteiras:,}".replace(",", ".")
-        minutos_formatados = f"{minutos:02d}"
-        return f"{horas_formatadas}:{minutos_formatados}h"
-    except (ValueError, TypeError): return "Inválido"
+        return f"{horas_inteiras:,}".replace(",", ".") + f":{minutos:02d}h"
+    except: return "Inválido"
 
-def exibir_kpi_secundario(label, value, icon=""):
-    label_com_icon = f"{icon} {label}" if icon else label
-    html = f"""
-    <div style="background-color: #f0f2f6; border-radius: 10px; padding: 20px; text-align: center; height: 100%; display: flex; flex-direction: column; justify-content: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-        <p style="font-size: 1.0em; font-weight: 600; color: #555; margin: 0; padding: 0;">{label_com_icon}</p>
-        <p style="font-size: 1.8em; font-weight: bold; color: #004080; margin: 5px 0 0 0; padding: 0;">{value}</p>
-    </div>
-    """
-    return html
-
-# ==============================================================================
-# FUNÇÕES DE CARREGAMENTO MODULAR
-# ==============================================================================
 @st.cache_data(ttl=300, show_spinner="Carregando dados de horas extras...")
 def carregar_horas_e_operacao(_gs_client, nome_planilha):
-    """Carrega e processa apenas os dados de Horas Extras e Operação."""
     try:
         planilha = _gs_client.open(nome_planilha)
-        nomes_abas_filiais = ['VAL', 'RIB', 'MAR', 'JAC', 'GRU']
-        lista_dfs_horas = []
-        for nome_aba in nomes_abas_filiais:
-            aba = planilha.worksheet(nome_aba)
-            registros = aba.get_all_records(head=1)
-            if not registros: continue
-            df_temp = pd.DataFrame(registros)
-            df_temp['filial'] = nome_aba
-            lista_dfs_horas.append(df_temp)
+        MAPA_FILIAIS = {'VAL': 'Valinhos', 'RIB': 'Ribeirão', 'MAR': 'Marília', 'JAC': 'Jacareí', 'GRU': 'Guarulhos'}        
+        lista_dfs = []
+        for nome_aba in MAPA_FILIAIS:
+            registros = planilha.worksheet(nome_aba).get_all_records(head=1)
+            if registros:
+                df_temp = pd.DataFrame(registros)
+                df_temp['filial'] = nome_aba
+                lista_dfs.append(df_temp)
 
-        if not lista_dfs_horas: return pd.DataFrame()
+        if not lista_dfs: return pd.DataFrame()
         
-        df_horas = pd.concat(lista_dfs_horas, ignore_index=True)
-        aba_operacao = planilha.worksheet('OPERACAO')
-        df_operacao = pd.DataFrame(aba_operacao.get_all_records(head=1))
+        df_horas = pd.concat(lista_dfs, ignore_index=True)
+        df_operacao = pd.DataFrame(planilha.worksheet('OPERACAO').get_all_records(head=1))
 
-        # Limpeza e transformação
         df_horas.columns = [str(col).strip().lower() for col in df_horas.columns]
         df_operacao.columns = [str(col).strip().lower() for col in df_operacao.columns]
         
-        mapeamento = {'colaborador': 'nome', 'função': 'funcao', 'salario base': 'salario_base', 'qtd he 50%': 'qtd_he_50%', 'qtd he 100%': 'qtd_he_100%', 'valor he 50%': 'valor_he_50%', 'valor he 100%': 'valor_he_100%', 'valor total': 'valor_total'}
-        df_horas.rename(columns=mapeamento, inplace=True)
+        df_horas.rename(columns={'colaborador': 'nome', 'função': 'funcao', 'salario base': 'salario_base', 'qtd he 50%': 'qtd_he_50%', 'qtd he 100%': 'qtd_he_100%', 'valor he 50%': 'valor_he_50%', 'valor he 100%': 'valor_he_100%', 'valor total': 'valor_total'}, inplace=True)
         df_operacao.rename(columns={'função': 'funcao'}, inplace=True)
         
         df_horas['nome'] = df_horas['nome'].astype(str).str.strip().str.upper()
         df_operacao['nome'] = df_operacao['nome'].astype(str).str.strip().str.upper()
 
-        colunas_valor = ['valor_he_50%', 'valor_he_100%', 'valor_total']
-        for col in colunas_valor:
+        for col in ['valor_he_50%', 'valor_he_100%', 'valor_total']:
             if col in df_horas.columns:
-                df_horas[col] = df_horas[col].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.strip()
-                df_horas[col] = pd.to_numeric(df_horas[col], errors='coerce').fillna(0)
+                df_horas[col] = pd.to_numeric(df_horas[col].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.strip(), errors='coerce').fillna(0)
 
         df_horas['data'] = pd.to_datetime(df_horas['data'], errors='coerce', dayfirst=True)
         df_horas.dropna(subset=['data', 'nome'], inplace=True)
         
         df_completo = pd.merge(df_horas, df_operacao[['nome', 'cargo']], on='nome', how='left')
         df_completo['cargo'] = df_completo['cargo'].fillna('Não Classificado')
-
         return df_completo
-
     except Exception as e:
         st.error(f"Erro ao carregar dados de Horas Extras: {e}")
         return pd.DataFrame()
@@ -203,734 +236,372 @@ def carregar_colaboradores(_gs_client, nome_planilha):
         if not registros: return pd.DataFrame()
         df = pd.DataFrame(registros)
         df.columns = [str(c).lower().strip() for c in df.columns]
-        # MODIFICAÇÃO: Adicionado 'função' à lista
         for col in ['filial', 'situação', 'colaborador', 'função']:
-            if col in df.columns:
-                df[col] = df[col].str.strip()
+            if col in df.columns: df[col] = df[col].str.strip()
         df['situação'] = df['situação'].str.upper()
         df['colaborador'] = df['colaborador'].str.upper()
         return df
-    except gspread.exceptions.WorksheetNotFound:
-        st.warning("Aba 'COLABORADORES' não encontrada."); return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Erro ao carregar Colaboradores: {e}"); return pd.DataFrame()
+    except: return pd.DataFrame()
 
 @st.cache_data(ttl=300, show_spinner="Buscando dados do banco...")
 def carregar_dados_banco(_engine):
-    """Carrega dados de anotações e contratações do banco de dados."""
-    df_anotacoes = pd.DataFrame()
-    df_contratacoes = pd.DataFrame()
-
-    if not _engine:
-        return df_anotacoes, df_contratacoes
-
+    df_ano, df_cont = pd.DataFrame(), pd.DataFrame()
+    if not _engine: return df_ano, df_cont
     try:
         with _engine.connect() as conn:
-            # Anotações
-            query_anotacoes = text("SELECT id_registro_original, nome_usuario, categoria, justificativa FROM anotacoes")
-            df_anotacoes = pd.DataFrame(conn.execute(query_anotacoes).fetchall(), columns=['id_registro_original', 'nome_usuario', 'categoria', 'justificativa'])
+            df_ano = pd.DataFrame(conn.execute(text("SELECT id_registro_original, nome_usuario, categoria, justificativa FROM anotacoes")).fetchall(), columns=['id_registro_original', 'nome_usuario', 'categoria', 'justificativa'])
+            df_cont = pd.DataFrame(conn.execute(text("""WITH RankedRH AS (SELECT filial_descricao, contratacoes_pendentes, ROW_NUMBER() OVER(PARTITION BY filial_descricao ORDER BY data_registro DESC, id DESC) as rn FROM rh_duplicate) SELECT filial_descricao, contratacoes_pendentes FROM RankedRH WHERE rn = 1;""")).fetchall(), columns=['filial_descricao', 'contratacoes_pendentes'])
+    except Exception as e: st.error(f"Erro ao buscar dados: {e}")
+    return df_ano, df_cont
 
-            # Contratações
-            query_contratacoes = text("""
-                WITH RankedRH AS (
-                    SELECT filial_descricao, contratacoes_pendentes, ROW_NUMBER() OVER(PARTITION BY filial_descricao ORDER BY data_registro DESC, id DESC) as rn
-                    FROM rh_duplicate
-                ) SELECT filial_descricao, contratacoes_pendentes FROM RankedRH WHERE rn = 1;
-            """)
-            df_contratacoes = pd.DataFrame(conn.execute(query_contratacoes).fetchall(), columns=['filial_descricao', 'contratacoes_pendentes'])
-            
-    except Exception as e:
-        st.error(f"Erro ao buscar dados do banco: {e}")
-    
-    return df_anotacoes, df_contratacoes
-
-# ==============================================================================
-# NOVA FUNÇÃO PARA CENTRALIZAR O CARREGAMENTO E PROCESSAMENTO PESADO
-# ==============================================================================
-@st.cache_data(ttl=300, show_spinner="Sincronizando e processando todos os dados...")
+@st.cache_data(ttl=300, show_spinner="Sincronizando dados...")
 def carregar_e_processar_dados_iniciais(_gs_client, _engine, nome_planilha):
-    """
-    Centraliza o carregamento de todas as fontes de dados e o processamento pesado
-    que só precisa ser feito uma vez.
-    """
-    # 1. Carregar dados das fontes
     df_horas = carregar_horas_e_operacao(_gs_client, nome_planilha)
-    df_colaboradores = carregar_colaboradores(_gs_client, nome_planilha)
-    df_anotacoes, df_contratacoes = carregar_dados_banco(_engine)
+    df_colab = carregar_colaboradores(_gs_client, nome_planilha)
+    df_ano, df_cont = carregar_dados_banco(_engine)
 
-    # Ponto de parada se dados essenciais não forem carregados
-    if df_horas.empty:
-        return None, None, None, None
+    if df_horas.empty: return None, None, None
 
-    # 2. Processamento pesado (merges, apply, etc.)
     df_horas['qtd_he_50%_dec'] = df_horas['qtd_he_50%'].apply(converter_hora_para_decimal)
     df_horas['qtd_he_100%_dec'] = df_horas['qtd_he_100%'].apply(converter_hora_para_decimal)
     df_horas['id_registro_original'] = df_horas['nome'].astype(str) + '_' + df_horas['data'].dt.strftime('%Y-%m-%d')
     
-    if not df_anotacoes.empty:
-        df = pd.merge(df_horas, df_anotacoes, on='id_registro_original', how='left')
+    if not df_ano.empty:
+        df = pd.merge(df_horas, df_ano, on='id_registro_original', how='left')
     else:
         df = df_horas.copy()
-        df['nome_usuario'] = None
-        df['categoria'] = ''
-        df['justificativa'] = ''
+        df['nome_usuario'] = None; df['categoria'] = ''; df['justificativa'] = ''
 
     df['nome_usuario'] = df['nome_usuario'].fillna('')
     df['categoria'] = df['categoria'].fillna('')
     df['justificativa'] = df['justificativa'].fillna('')
     df = df.loc[:, ~df.columns.duplicated()]
 
-    def determinar_periodo_comercial(data):
+    def det_periodo(data):
         if data.day > 20:
-            data_periodo = data + pd.DateOffset(months=1)
-            return data_periodo.year, data_periodo.month
-        else:
-            return data.year, data.month
+            dp = data + pd.DateOffset(months=1)
+            return dp.year, dp.month
+        return data.year, data.month
     
-    df[['ano_comercial', 'mes_comercial']] = df['data'].apply(
-        lambda data: pd.Series(determinar_periodo_comercial(data))
-    )
-    
-    return df, df_colaboradores, df_contratacoes
+    df[['ano_comercial', 'mes_comercial']] = df['data'].apply(lambda d: pd.Series(det_periodo(d)))
+    return df, df_colab, df_cont
 
 # ==============================================================================
-# LÓGICA DO DASHBOARD
+# 📊 LÓGICA DO DASHBOARD PRINCIPAL
 # ==============================================================================
 def run_dashboard():
-    st.title("👥 Dashboard de Recursos Humanos")
-
-    # --- NOVO BLOCO DE CSS PARA ESTILIZAR O EXPANDER (pode manter o seu) ---
-    st.markdown("""
-    <style>
-        div[data-testid="stExpander"] summary {
-            background-color: #f0f2f6; border: 1px solid #e6eaf1; border-radius: 10px;
-            padding: 12px; font-size: 1.05em; font-weight: 600; color: #004080;
-        }
-        div[data-testid="stExpander"] summary:hover { background-color: #e6eaf1; }
-    </style>
-    """, unsafe_allow_html=True)
+    # ─── HEADER EXECUTIVO ───────────────────────────────
+    st.markdown(
+        f"""<div style="background:linear-gradient(135deg,{C['deep']},{C['mid']});
+                border-radius:16px; padding:26px 30px; margin-bottom:26px; color:#fff;">
+            <div style="font-size:1.55rem; font-weight:700; margin-bottom:5px;
+                        letter-spacing:-0.01em;">👥 Dashboard de Recursos Humanos</div>
+            <div style="font-size:0.83rem; opacity:.70; max-width:580px;">
+                Gestão de horas extras, quadro de colaboradores, anotações de gestores e projeção de custos com encargos.
+            </div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
     usuario_logado = get_logged_user()
     departamento_usuario = usuario_logado.get("departamento", "").strip().lower() 
     NOME_DA_PLANILHA = "bdBANCO DE HORAS"
 
-    # --- LÓGICA DE CARREGAMENTO ÚNICO COM st.session_state ---
     if 'data_loaded' not in st.session_state:
         gs_client = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
-        df, df_colaboradores, df_contratacoes = carregar_e_processar_dados_iniciais(gs_client, engine, NOME_DA_PLANILHA)
+        df, df_colab, df_cont = carregar_e_processar_dados_iniciais(gs_client, engine, NOME_DA_PLANILHA)
         
         if df is None:
-            st.warning("Não há dados de horas extras válidos para exibir. O dashboard não pode continuar.")
+            st.warning("Não há dados de horas extras válidos para exibir.")
             st.stop()
             
-        # Armazena os dados processados na sessão
         st.session_state['df_principal'] = df
-        st.session_state['df_colaboradores'] = df_colaboradores
-        st.session_state['df_contratacoes'] = df_contratacoes
+        st.session_state['df_colaboradores'] = df_colab
+        st.session_state['df_contratacoes'] = df_cont
         st.session_state['data_loaded'] = True
-        st.toast("Dados carregados e processados!", icon="✅")
 
-    # A partir daqui, sempre usamos os dados da sessão
     df = st.session_state['df_principal']
     df_colaboradores = st.session_state['df_colaboradores']
     df_contratacoes = st.session_state['df_contratacoes']
 
-    # --- Interface Principal do Dashboard ---
-    if 'data' in df.columns and not df['data'].isnull().all():
-        ultima_atualizacao = pd.to_datetime(df['data']).max().strftime('%d/%m')
-        st.sidebar.info(f"🗓️ Atualizado até **{ultima_atualizacao}**")
-
-    # Botão para limpar cache / forçar sincronização
-    if st.sidebar.button("🔄 Forçar Sincronização", use_container_width=True):
-        # Limpa o cache de dados e o estado da sessão para forçar o recarregamento
-        st.cache_data.clear()
-        keys_to_delete = ['data_loaded', 'df_principal', 'df_colaboradores', 'df_contratacoes']
-        for key in keys_to_delete:
-            if key in st.session_state:
-                del st.session_state[key]
-        st.success("Sincronização forçada! Os dados serão recarregados na próxima ação.")
-        st.rerun()
-
-    # RESTANTE DO SEU CÓDIGO DO DASHBOARD PERMANECE IGUAL
-    # ... (cole todo o resto da sua função run_dashboard() aqui, começando pelos filtros) ...
-    # Exemplo:
-    st.sidebar.header("🔍 Filtros Principais")
-    meses_pt = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
-    # Filtro de Ano: Usa a nova coluna 'ano_comercial'
-    anos_disponiveis = sorted(df['ano_comercial'].unique(), reverse=True)
-    ano_selecionado = st.sidebar.selectbox("**Ano**", anos_disponiveis, index=0)
-    
-    # Filtra o DataFrame pelo ano comercial selecionado
-    df_ano = df[df['ano_comercial'] == ano_selecionado]
-    
-    # Filtro de Mês: Usa a nova coluna 'mes_comercial'
-    meses_disponiveis_ano = sorted(df_ano['mes_comercial'].unique())
-    meses_nomes_disponiveis = ['Todos'] + [meses_pt[m] for m in meses_disponiveis_ano]
-
-    # Lógica para definir o mês padrão corretamente
-    hoje = datetime.now()
-    data_referencia = hoje + pd.DateOffset(months=1) if hoje.day > 20 else hoje
-    indice_padrao = 0
-    if ano_selecionado == data_referencia.year:
-        mes_comercial_nome_atual = meses_pt.get(data_referencia.month)
-        if mes_comercial_nome_atual in meses_nomes_disponiveis:
-            indice_padrao = meses_nomes_disponiveis.index(mes_comercial_nome_atual)
+    # --- BARRA LATERAL (SIDEBAR) ---
+    with st.sidebar:
+        st.info(f"Olá, **{usuario_logado.get('nome', 'Usuário')}**")
         
-    mes_selecionado_nome = st.sidebar.selectbox("**Mês**", meses_nomes_disponiveis, index=indice_padrao)
-    
-    # Lógica de filtragem final
-    if mes_selecionado_nome == 'Todos':
-        df_periodo = df_ano.copy()
-        info_periodo = f"Exibindo dados de todo o ano de **{ano_selecionado}**."
-    else:
-        mes_num = next(k for k, v in meses_pt.items() if v == mes_selecionado_nome)
-        # Filtra o DataFrame usando a coluna 'mes_comercial'
-        df_periodo = df_ano[df_ano['mes_comercial'] == mes_num].copy()
+        if st.button("🚪 Sair", use_container_width=True): logout()
+        if st.button("🔄 Forçar Sincronização", use_container_width=True):
+            st.cache_data.clear()
+            for k in ['data_loaded', 'df_principal', 'df_colaboradores', 'df_contratacoes']:
+                if k in st.session_state: del st.session_state[k]
+            st.rerun()
+            
+        st.markdown("---")
+        st.markdown("<div style='font-size:0.75rem; font-weight:700; color:#5C677D; text-transform:uppercase; margin-bottom:8px;'>📅 Período de Análise</div>", unsafe_allow_html=True)
+
+        meses_pt = {1:'Janeiro', 2:'Fevereiro', 3:'Março', 4:'Abril', 5:'Maio', 6:'Junho', 7:'Julho', 8:'Agosto', 9:'Setembro', 10:'Outubro', 11:'Novembro', 12:'Dezembro'}
+        anos_disp = sorted(df['ano_comercial'].unique(), reverse=True)
+        ano_sel = st.selectbox("Ano", anos_disp, index=0)
         
-        # Calcula as datas de início e fim apenas para o texto informativo
-        data_fim_info = pd.to_datetime(f'{ano_selecionado}-{mes_num}-20')
-        data_inicio_info = (data_fim_info - pd.DateOffset(months=1)).replace(day=21)
-        info_periodo = f"Período de **{data_inicio_info.strftime('%d/%m/%Y')}** a **{data_fim_info.strftime('%d/%m/%Y')}**."
+        df_ano = df[df['ano_comercial'] == ano_sel]
+        meses_disp = sorted(df_ano['mes_comercial'].unique())
+        meses_nomes = ['Todos'] + [meses_pt[m] for m in meses_disp]
 
-    mapa_filiais = {'Guarulhos': 'Guarulhos', 'Valinhos': 'Valinhos', 'Ribeirao': 'Ribeirão', 'Marilia': 'Marília', 'Jacareí': 'Jacareí'}
-    filiais_disponiveis = sorted(df_periodo['filial'].unique().tolist())
-    nomes_filiais_display = ['Todas'] + [mapa_filiais.get(f, f) for f in filiais_disponiveis]
-    filial_selecionada_nome = st.sidebar.selectbox("**Filial**", nomes_filiais_display)
+        hoje = datetime.now()
+        dt_ref = hoje + pd.DateOffset(months=1) if hoje.day > 20 else hoje
+        idx_padrao = 0
+        if ano_sel == dt_ref.year and meses_pt.get(dt_ref.month) in meses_nomes:
+            idx_padrao = meses_nomes.index(meses_pt.get(dt_ref.month))
+            
+        mes_sel = st.selectbox("Mês", meses_nomes, index=idx_padrao)
+        
+        if mes_sel == 'Todos':
+            df_periodo = df_ano.copy()
+            st.caption(f"Exibindo ano **{ano_sel}**.")
+        else:
+            mes_num = next(k for k, v in meses_pt.items() if v == mes_sel)
+            df_periodo = df_ano[df_ano['mes_comercial'] == mes_num].copy()
+            dt_fim = pd.to_datetime(f'{ano_sel}-{mes_num}-20')
+            dt_ini = (dt_fim - pd.DateOffset(months=1)).replace(day=21)
+            st.caption(f"Período: **{dt_ini.strftime('%d/%m/%Y')}** a **{dt_fim.strftime('%d/%m/%Y')}**")
 
-    df_filtrado = df_periodo.copy()
-    if filial_selecionada_nome != 'Todas':
-        cod_selecionado = [k for k, v in mapa_filiais.items() if v == filial_selecionada_nome][0]
-        df_filtrado = df_periodo[df_periodo['filial'] == cod_selecionado].copy()
+        mapa_filiais = {'Valinhos': 'Valinhos', 'Ribeirao': 'Ribeirão', 'Marilia': 'Marília', 'Jacareí': 'Jacareí', 'Guarulhos': 'Guarulhos'}
+        filiais_disp = sorted(df_periodo['filial'].unique().tolist())
+        nomes_filiais = ['Todas'] + [mapa_filiais.get(c, c) for c in filiais_disp]
+        filial_sel = st.selectbox("Filial", nomes_filiais)
 
-    st.info(info_periodo)
-    
+        df_filtrado = df_periodo.copy()
+        if filial_sel != 'Todas':
+            rev_map = {v: k for k, v in mapa_filiais.items()}
+            cod_sel = rev_map.get(filial_sel, filial_sel)
+            df_filtrado = df_periodo[df_periodo['filial'] == cod_sel].copy()
+
     if df_filtrado.empty:
         st.warning("Nenhum dado encontrado para os filtros selecionados.")
-    else:
-        # --- SEÇÃO DE KPIs ---
-        total_he_geral = df_filtrado['valor_total'].sum()
-        custo_total_com_encargos = total_he_geral * 1.16  # <-- NOVO CALCULO
-        total_he_50 = df_filtrado['valor_he_50%'].sum()
-        total_he_100 = df_filtrado['valor_he_100%'].sum()
-        total_horas_50_dec = df_filtrado['qtd_he_50%_dec'].sum()
-        total_horas_100_dec = df_filtrado['qtd_he_100%_dec'].sum()
-        total_horas_dec = total_horas_50_dec + total_horas_100_dec
-        total_colaboradores_he = df_filtrado[df_filtrado['valor_total'] > 0]['nome'].nunique()
+        st.stop()
 
-        # --- Lógica para calcular as contratações pendentes ---
-        total_contratacoes_pendentes = 0
-        if not df_contratacoes.empty:
-            if filial_selecionada_nome == 'Todas':
-                # Soma o valor de todas as filiais
-                total_contratacoes_pendentes = int(df_contratacoes['contratacoes_pendentes'].sum())
-            else:
-                # Busca o valor da filial específica
-                df_contratacoes_filtrado = df_contratacoes[df_contratacoes['filial_descricao'] == filial_selecionada_nome]
-                if not df_contratacoes_filtrado.empty:
-                    total_contratacoes_pendentes = int(df_contratacoes_filtrado['contratacoes_pendentes'].iloc[0])
+    # --- CÁLCULOS KPI ---
+    total_he_geral = df_filtrado['valor_total'].sum()
+    custo_c_encargos = total_he_geral * 1.16 
+    total_he_50 = df_filtrado['valor_he_50%'].sum()
+    total_he_100 = df_filtrado['valor_he_100%'].sum()
+    total_horas_dec = df_filtrado['qtd_he_50%_dec'].sum() + df_filtrado['qtd_he_100%_dec'].sum()
+    colabs_he = df_filtrado[df_filtrado['valor_total'] > 0]['nome'].nunique()
 
+    tot_pendentes = 0
+    if not df_contratacoes.empty:
+        if filial_sel == 'Todas': tot_pendentes = int(df_contratacoes['contratacoes_pendentes'].sum())
+        else:
+            df_c_f = df_contratacoes[df_contratacoes['filial_descricao'] == filial_sel]
+            if not df_c_f.empty: tot_pendentes = int(df_c_f['contratacoes_pendentes'].iloc[0])
 
-        # --- LÓGICA PARA CALCULAR KPIs DE COLABORADORES
-        total_colaboradores_geral = 0
-        total_colaboradores_ativos = 0
-        total_colaboradores_inativos = 0
-        lista_ativos_df, lista_inativos_df = pd.DataFrame(), pd.DataFrame()
+    tot_ativos, tot_inativos, tot_geral = 0, 0, 0
+    lista_ativos_df, lista_inativos_df = pd.DataFrame(), pd.DataFrame()
+    if not df_colaboradores.empty:
+        df_c_f = df_colaboradores[df_colaboradores['filial'] == filial_sel] if filial_sel != 'Todas' else df_colaboradores.copy()
+        if not df_c_f.empty:
+            lista_ativos_df = df_c_f[df_c_f['situação'] == 'TRABALHANDO']
+            lista_inativos_df = df_c_f[df_c_f['situação'] != 'TRABALHANDO']
+            tot_ativos = len(lista_ativos_df)
+            tot_inativos = len(lista_inativos_df)
+            tot_geral = len(df_c_f)
 
-        if not df_colaboradores.empty:
-            df_colab_filtrado = df_colaboradores.copy()
-            # Aplica o filtro de filial, se não for "Todas"
-            if filial_selecionada_nome != 'Todas':
-                df_colab_filtrado = df_colaboradores[df_colaboradores['filial'] == filial_selecionada_nome]
-            
-            # Realiza os cálculos sobre o DataFrame (filtrado ou não)
-            if not df_colab_filtrado.empty:
-                lista_ativos_df = df_colab_filtrado[df_colab_filtrado['situação'] == 'TRABALHANDO'][['colaborador', 'função', 'filial']]
-                lista_inativos_df = df_colab_filtrado[df_colab_filtrado['situação'] != 'TRABALHANDO'][['colaborador', 'função', 'filial', 'situação']]
-                total_colaboradores_ativos = df_colab_filtrado[df_colab_filtrado['situação'] == 'TRABALHANDO']['colaborador'].nunique()
-                total_colaboradores_inativos = df_colab_filtrado[df_colab_filtrado['situação'] != 'TRABALHANDO']['colaborador'].nunique()
-                total_colaboradores_geral = df_colab_filtrado['colaborador'].nunique()
+    # --- SEÇÃO 1: KPIs PRINCIPAIS ---
+    c1, c2, c3 = st.columns(3)
+    kpi_card(c1, "💰", "Custo Total (HE)", format_BRL(total_he_geral), f"Com Encargos (16%): {format_BRL(custo_c_encargos)}", C["cyan"])
+    kpi_card(c2, "⏳", "Total de Horas Extras", format_horas_decimal(total_horas_dec), "Somatório de 50% e 100%", C["mid"])
+    kpi_card(c3, "👷", "Colaboradores com HE", str(colabs_he), "Realizaram horas no período", C["amber"])
 
-        # --- KPI PRINCIPAL ---
-        html_kpi_principal = f"""
-        <div style="display: flex; justify-content: space-around; align-items: center; background-color: #004080; color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
-            <div style="text-align: center; flex-grow: 1;">
-                <p style="font-size: 1.2em; color: #ffffff; margin-bottom: 0;">CUSTO TOTAL COM HORAS EXTRAS</p>
-                <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{format_BRL(total_he_geral)}</p>
-                <p style="font-size: 1.0em; color: #ffffff; margin-top: 2px;">Projeção c/ Encargos (16%): <b>{format_BRL(custo_total_com_encargos)}</b></p>
-            </div>
-            <div style="border-left: 2px solid #aab; height: 80px; margin: 0 20px;"></div>
-            <div style="text-align: center; flex-grow: 1;">
-                <p style="font-size: 1.2em; color: #ffffff; margin-bottom: 0;">QUANTIDADE TOTAL DE HORAS</p>
-                <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{format_horas_decimal(total_horas_dec)}</p>
-            </div>
-            <div style="border-left: 2px solid #aab; height: 80px; margin: 0 20px;"></div>
-            <div style="text-align: center; flex-grow: 1;">
-                <p style="font-size: 1.2em; color: #ffffff; margin-bottom: 0;">TOTAL COLABORADORES COM HE</p>
-                <p style="font-size: 3.0em; font-weight: bold; margin-bottom: 0;">{(total_colaboradores_he)}</p>
-            </div>
+    st.markdown("<div style='margin-bottom:16px'></div>", unsafe_allow_html=True)
 
-        </div>
-        """
-        st.markdown(html_kpi_principal, unsafe_allow_html=True)
+    # --- SEÇÃO 2: KPIs SECUNDÁRIOS ---
+    sec("📊 Distribuição de Custos e Equipe")
+    k1, k2, k3, k4 = st.columns(4)
+    kpi_card(k1, "📈", "Custo HE 50%", format_BRL(total_he_50), "Horas úteis", C["sky"])
+    kpi_card(k2, "🔥", "Custo HE 100%", format_BRL(total_he_100), "Domingos e Feriados", C["red"])
+    kpi_card(k3, "🟢", "Colaboradores Ativos", str(tot_ativos), f"De {tot_geral} cadastrados", C["green"])
+    kpi_card(k4, "📝", "Contratações Pendentes", str(tot_pendentes), "Vagas abertas no RH", C["amber"])
 
-        # Primeira Linha de KPIs
-        kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
-        with kpi_col1: st.markdown(exibir_kpi_secundario("Custo HE 50%", format_BRL(total_he_50), icon="💰"), unsafe_allow_html=True)
-        with kpi_col2: st.markdown(exibir_kpi_secundario("Total Horas 50%", format_horas_decimal(total_horas_50_dec), icon="⏰"), unsafe_allow_html=True)
-        with kpi_col3: st.markdown(exibir_kpi_secundario("Custo HE 100%", format_BRL(total_he_100), icon="💰"), unsafe_allow_html=True)
-        with kpi_col4: st.markdown(exibir_kpi_secundario("Total Horas 100%", format_horas_decimal(total_horas_100_dec), icon="⏰"), unsafe_allow_html=True)
+    # Listas de Colaboradores em Expanders
+    c_exp1, c_exp2 = st.columns(2)
+    with c_exp1:
+        with st.expander(f"🟢 Ver Lista de Ativos ({tot_ativos})"):
+            if not lista_ativos_df.empty:
+                df_exib = lista_ativos_df[['colaborador', 'filial', 'situação']].rename(columns=lambda x: x.title())
+                st.dataframe(df_exib, use_container_width=True, hide_index=True)
+            else: st.info("Nenhum ativo.")
+    with c_exp2:
+        with st.expander(f"🔴 Ver Lista de Inativos ({tot_inativos})"):
+            if not lista_inativos_df.empty:
+                df_exib = lista_inativos_df[['colaborador', 'função', 'filial', 'situação']].rename(columns=lambda x: x.title())
+                st.dataframe(df_exib, use_container_width=True, hide_index=True)
+            else: st.info("Nenhum inativo.")
 
-        # Segunda Linha de KPIs
-        st.write("") 
-        kpi_col5, kpi_col6, kpi_col7, kpi_col8 = st.columns(4)
-        with kpi_col5: st.markdown(exibir_kpi_secundario("Total de Colaboradores", f"{total_colaboradores_geral}", icon="👥"), unsafe_allow_html=True)
-        with kpi_col6: st.markdown(exibir_kpi_secundario("Colaboradores Ativos", f"{total_colaboradores_ativos}", icon="🟢"), unsafe_allow_html=True)
-        with kpi_col7: st.markdown(exibir_kpi_secundario("Colaboradores Inativos", f"{total_colaboradores_inativos}", icon="🔴"), unsafe_allow_html=True)
-        with kpi_col8: st.markdown(exibir_kpi_secundario("Contratações Pendentes", f"{total_contratacoes_pendentes}", icon="📝"), unsafe_allow_html=True)
-        st.markdown("---")
+    st.markdown("<div style='margin-bottom:32px'></div>", unsafe_allow_html=True)
 
-        # --- SEÇÃO PARA LISTAR E EXTRAIR COLABORADORES ---
-        def formatar_df_para_exibicao(df_original):
-            if df_original.empty: return pd.DataFrame()
-            df_display = df_original.sort_values(by='colaborador').copy()
-            for col in ['colaborador', 'função', 'filial', 'situação']:
-                if col in df_display.columns:
-                    df_display[col] = df_display[col].str.title()
+    # --- SEÇÃO 3: GRÁFICOS ---
+    cg1, cg2 = st.columns(2)
+    
+    with cg1:
+        sec("💼 Custo de HE por Cargo")
+        if 'selected_cargo' not in st.session_state: st.session_state.selected_cargo = None
 
-            mapa_nomes = {'colaborador': 'Colaborador', 'função': 'Função', 'filial': 'Filial', 'situação': 'Situação'}
-            return df_display.rename(columns=mapa_nomes)
-
-        df_ativos_display = formatar_df_para_exibicao(df_colab_filtrado[df_colab_filtrado['situação'] == 'TRABALHANDO'])
-        df_inativos_display = formatar_df_para_exibicao(df_colab_filtrado[df_colab_filtrado['situação'] != 'TRABALHANDO'])
-
-        st.subheader("Relação de Colaboradores")
-        col_exp1, col_exp2 = st.columns(2)
-        with col_exp1:
-            with st.expander(f"🟢 Listar Colaboradores Ativos ({total_colaboradores_ativos})"):
-                if not df_ativos_display.empty:
-                    st.dataframe(df_ativos_display[['Colaborador', 'Filial', 'Situação']], use_container_width=True, hide_index=True)
-                    st.download_button(label="📥 Baixar Lista de Ativos (.csv)", data=converte_df_para_csv(df_ativos_display), file_name=f"colaboradores_ativos.csv", mime='text/csv')
-                else: st.info("Nenhum colaborador ativo para os filtros.")
-        
-        with col_exp2:
-            with st.expander(f"🔴 Listar Colaboradores Inativos ({total_colaboradores_inativos})"):
-                if not df_inativos_display.empty:
-                    st.dataframe(df_inativos_display[['Colaborador', 'Função', 'Filial', 'Situação']], use_container_width=True, hide_index=True)
-                    st.download_button(label="📥 Baixar Lista de Inativos (.csv)", data=converte_df_para_csv(df_inativos_display), file_name=f"colaboradores_inativos.csv", mime='text/csv')
-                else: st.info("Nenhum colaborador inativo para os filtros.")
-        st.markdown("---")
-
-        # --- SEÇÃO DE GRÁFICOS ---
-        col_graf1, col_graf2 = st.columns(2)
-        with col_graf1:
-            if 'selected_cargo' not in st.session_state:
+        if st.session_state.selected_cargo:
+            st.markdown(f"**Detalhamento: {st.session_state.selected_cargo}**")
+            df_det = df_filtrado[(df_filtrado['cargo'] == st.session_state.selected_cargo) & (df_filtrado['valor_total'] > 0)].copy()
+            df_det['Data'] = pd.to_datetime(df_det['data']).dt.strftime('%d/%m/%Y')
+            df_det['Valor'] = df_det['valor_total'].apply(format_BRL)
+            st.dataframe(df_det[['Data', 'nome', 'filial', 'Valor']].rename(columns={'nome':'Colaborador','filial':'Filial'}), use_container_width=True, hide_index=True)
+            if st.button("⬅️ Voltar"):
                 st.session_state.selected_cargo = None
-
-            # Título principal é exibido em ambas as visões
-            st.subheader("Custo de HE por Cargo")
-
-            # SE UM CARGO FOI SELECIONADO (VISÃO DE DETALHE)
-            if st.session_state.selected_cargo:
-                st.markdown(f"#### Detalhes para: **{st.session_state.selected_cargo}**")
-                
-                df_detalhes = df_filtrado[(df_filtrado['cargo'] == st.session_state.selected_cargo) & (df_filtrado['valor_total'] > 0)].copy()
-                df_detalhes['data'] = pd.to_datetime(df_detalhes['data']).dt.strftime('%d/%m/%Y')
-                df_detalhes['valor_total_fmt'] = df_detalhes['valor_total'].apply(format_BRL)
-                df_detalhes_display = df_detalhes[['data', 'nome', 'filial', 'valor_total_fmt']].rename(columns={
-                    'data': 'Data', 'nome': 'Colaborador', 'filial': 'Filial', 'valor_total_fmt': 'Valor Total'
-                }).sort_values(by='Data')
-                
-                st.dataframe(df_detalhes_display, use_container_width=True, hide_index=True)
-                
-                if st.button("⬅️ Voltar para a visão geral"):
-                    st.session_state.selected_cargo = None
-                    st.rerun()
-
-            # SE NENHUM CARGO FOI SELECIONADO (VISÃO PRINCIPAL)
-# SE NENHUM CARGO FOI SELECIONADO (VISÃO PRINCIPAL)
-            else:
-                custo_por_cargo = df_filtrado.groupby('cargo')['valor_total'].sum().sort_values(ascending=False).reset_index()
-                custo_por_cargo['valor_formatado'] = custo_por_cargo['valor_total'].apply(format_BRL)
-                
-                # --- ABORDAGEM FINAL COM PLOTLY.GRAPH_OBJECTS (go) ---
-                import plotly.graph_objects as go
-                fig_bar = go.Figure()
-                for index, row in custo_por_cargo.iterrows():
-                    fig_bar.add_trace(go.Bar(
-                        x=[row['cargo']],
-                        y=[row['valor_total']],
-                        name=row['cargo'],
-                        customdata=[[row['cargo'], row['valor_formatado']]],
-                        hovertemplate='<b>Cargo:</b> %{customdata[0]}<br><b>Custo Total:</b> %{customdata[1]}<extra></extra>'
-                    ))
-
-                # Aplica o layout e a formatação de texto na barra
-                fig_bar.update_layout(
-                    barmode='group',
-                    hovermode='closest',
-                    showlegend=False,
-                    xaxis_title=None,
-                    yaxis_title="Custo Total (R$)",
-                    hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial, sans-serif", font_color="black"),
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    margin=dict(l=40, r=40, t=20, b=40)
-                )
-
-                fig_bar.update_traces(
-                    texttemplate='%{y:.2s}',
-                    textposition='outside'
-                )
-
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-                st.write("") 
-                lista_cargos = custo_por_cargo['cargo'].tolist()
-                opcoes_menu = ["-- Selecione um cargo para ver detalhes --"] + lista_cargos
-                cargo_selecionado_menu = st.selectbox(
-                    "**Análise Detalhada por Cargo:**",
-                    options=opcoes_menu,
-                    key="selectbox_cargo_drilldown" # Adicionada uma chave para evitar conflitos
-                )
-
-                if cargo_selecionado_menu != opcoes_menu[0]:
-                    st.session_state.selected_cargo = cargo_selecionado_menu
-                    st.rerun()
-                
-        # GRÁFICO 2: Evolução do Custo por Filial (Gráfico de Linha com Tooltip Consolidado)
-        with col_graf2:
-            st.subheader("Evolução do Custo por Filial")
-            if filial_selecionada_nome == 'Todas':
-                custo_diario_filial = df_periodo.groupby(['data', 'filial'])['valor_total'].sum().reset_index()
-                custo_diario_filial['filial'] = custo_diario_filial['filial'].map(mapa_filiais).fillna(custo_diario_filial['filial'])
-
-                fig_line = px.line(
-                    custo_diario_filial,
-                    x='data',
-                    y='valor_total',
-                    color='filial',
-                    title=None,
-                    labels={'data': 'Período', 'valor_total': 'Custo Total (R$)', 'filial': 'Filial'},
-                    markers=True,
-                    hover_data={'filial': True}
-                )
-                
-                fig_line.update_layout(
-                    hovermode='x unified',
-                    xaxis_title=None,
-                    yaxis_title="Custo Total (R$)",
-                    legend_title_text='Filial',
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    paper_bgcolor='rgba(0,0,0,0)'
-                )
-                
-                fig_line.update_traces(
-                    hovertemplate='<b>%{customdata[0]}:</b> R$ %{y:,.2f}<extra></extra>'
-                )
-
-            else:
-                custo_diario_filial = df_filtrado.groupby('data')['valor_total'].sum().reset_index()
-
-                fig_line = px.line(
-                    custo_diario_filial,
-                    x='data',
-                    y='valor_total',
-                    title=f"Evolução Diária do Custo - {filial_selecionada_nome}",
-                    labels={'data': 'Período', 'valor_total': 'Custo Total (R$)'},
-                    markers=True
-                )
-                
-                fig_line.update_layout(
-                    title_x=0.5,
-                    xaxis_title=None,
-                    yaxis_title="Custo Total (R$)",
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    hovermode='x unified'
-                )
-
-                fig_line.update_traces(
-                    hovertemplate=f'<b>{filial_selecionada_nome}:</b> R$ %{{y:,.2f}}<extra></extra>'
-                )
-            st.plotly_chart(fig_line, use_container_width=True)
-
-        # --- SEÇÃO DE ANOTAÇÕES ---
-        st.markdown("---")
-        st.markdown("#### 📝 Tabela de Registros e Anotações")
-
-        col_filtro_data, col_filtro_check = st.columns([1.5, 3])
-        with col_filtro_data:
-            data_anotacao_filtro = st.date_input(
-                "**Filtrar por data:**", 
-                value=date.today(), 
-                key="anotacao_filtro_data", 
-                format="DD/MM/YYYY"
-            )
-        with col_filtro_data:
-            marcar_todos = st.checkbox(
-                "Exibir o período completo (ignora o filtro de data)", 
-                key="anotacao_marcar_todos_check"
-            )        
-
-        if marcar_todos:
-            df_para_anotar = df_filtrado[df_filtrado['valor_total'] > 0].copy()
+                st.rerun()
         else:
-            df_para_anotar = df_filtrado[
-                (df_filtrado['data'].dt.date == data_anotacao_filtro) & 
-                (df_filtrado['valor_total'] > 0)
-            ].copy()
+            custo_cargo = df_filtrado.groupby('cargo')['valor_total'].sum().sort_values(ascending=True).reset_index()
+            fig_bar = go.Figure(go.Bar(
+                x=custo_cargo['valor_total'], y=custo_cargo['cargo'], orientation='h',
+                marker_color=C["cyan"], text=custo_cargo['valor_total'].apply(format_BRL), textposition='auto',
+                hovertemplate='<b>%{y}</b><br>Custo: R$ %{x:,.2f}<extra></extra>'
+            ))
+            fig_bar.update_layout(**plotly_layout(height=400, margin=dict(l=0, r=0, t=10, b=0)))
+            st.plotly_chart(fig_bar, use_container_width=True)
 
-        if df_para_anotar.empty:
-            st.warning(f"Nenhum registro encontrado para a data **{data_anotacao_filtro.strftime('%d/%m/%Y')}** com os filtros principais selecionados.")
+            cargos = ["-- Ver detalhes de um cargo --"] + custo_cargo['cargo'].tolist()
+            sel_cargo = st.selectbox("Análise Detalhada:", options=cargos, label_visibility="collapsed")
+            if sel_cargo != cargos[0]:
+                st.session_state.selected_cargo = sel_cargo
+                st.rerun()
+
+    with cg2:
+        sec("📈 Evolução do Custo Diário")
+        if filial_sel == 'Todas':
+            custo_dia = df_periodo.groupby(['data', 'filial'])['valor_total'].sum().reset_index()
+            custo_dia['filial'] = custo_dia['filial'].map(mapa_filiais).fillna(custo_dia['filial'])
+            fig_line = px.line(custo_dia, x='data', y='valor_total', color='filial', markers=True)
         else:
-            df_para_download = df_para_anotar[[
-                'data', 'nome', 'cargo', 'qtd_he_50%', 'qtd_he_100%', 'valor_total', 'categoria', 'justificativa', 'nome_usuario'
-            ]].copy()
-            df_para_download = df_para_download.rename(columns={
-                'data': 'Data', 'nome': 'Colaborador', 'cargo': 'Cargo', 'qtd_he_50%': 'HE 50%',
-                'qtd_he_100%': 'HE 100%', 'valor_total': 'Valor Total (R$)', 'categoria': 'Categoria',
-                'justificativa': 'Justificativa', 'nome_usuario': 'Gestor Responsavel'
-            })
-            df_para_download = df_para_download[['Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)', 'Categoria', 'Justificativa', 'Gestor Responsavel']]
-            df_para_download['Data'] = pd.to_datetime(df_para_download['Data']).dt.strftime('%d/%m/%Y')
-            df_para_download['Valor Total (R$)'] = df_para_download['Valor Total (R$)'].apply(format_BRL)
+            custo_dia = df_filtrado.groupby('data')['valor_total'].sum().reset_index()
+            fig_line = px.line(custo_dia, x='data', y='valor_total', markers=True)
+            fig_line.update_traces(line_color=C["cyan"])
 
-            if departamento_usuario in DEPARTAMENTOS_AUTORIZADOS_PARA_ACOES:
-                st.download_button(
-                    label="📥 Baixar Relatório Filtrado (.csv)", data=converte_df_para_csv(df_para_download),
-                    file_name=f"relatorio_anotacoes_{data_anotacao_filtro.strftime('%d/%m/%Y')}.csv", mime='text/csv'
-                )
-            else:pass
+        fig_line.update_traces(hovertemplate='<b>%{x|%d/%m/%Y}</b><br>Custo: R$ %{y:,.2f}<extra></extra>')
+        fig_line.update_layout(**plotly_layout(height=400, margin=dict(l=0, r=0, t=10, b=0), yaxis_title="Custo Diário (R$)"))
+        st.plotly_chart(fig_line, use_container_width=True)
 
-            # --- INÍCIO DA LÓGICA CORRIGIDA ---
-            df_editor_pronto = df_para_anotar.copy()
-            
-            # 1. Renomeia colunas para exibição amigável
-            df_editor_pronto.rename(columns={
-                'categoria': 'Categoria', 'justificativa': 'Justificativa', 'nome': 'Colaborador',
-                'data': 'Data', 'qtd_he_50%': 'HE 50%', 'qtd_he_100%': 'HE 100%',
-                'cargo': 'Cargo', 'valor_total': 'Valor Total (R$)'
-            }, inplace=True)
-            
-            # 2. Formata as colunas e preenche nulos
-            df_editor_pronto['Data'] = pd.to_datetime(df_editor_pronto['Data']).dt.strftime('%d/%m/%Y')
-            df_editor_pronto['Valor Total (R$)'] = df_editor_pronto['Valor Total (R$)'].apply(format_BRL)
-            df_editor_pronto['Categoria'] = df_editor_pronto['Categoria'].fillna('')
-            df_editor_pronto['Justificativa'] = df_editor_pronto['Justificativa'].fillna('')
+    # --- SEÇÃO 4: ANOTAÇÕES E JUSTIFICATIVAS ---
+    st.markdown("<div style='margin-bottom:32px'></div>", unsafe_allow_html=True)
+    sec("📝 Registro de Ocorrências e Justificativas")
 
-            # 3. **PONTO CRÍTICO**: Define o ID único como índice do DataFrame
-            df_editor_pronto.set_index('id_registro_original', inplace=True)
-            
-            # 4. Guarda uma cópia do estado original, já com o índice correto, para comparação
-            st.session_state['df_anotacao_original_indexed'] = df_editor_pronto.copy()
+    cf1, cf2 = st.columns([1.5, 3])
+    with cf1: dt_anotacao = st.date_input("Filtrar Ocorrências por data:", value=date.today(), format="DD/MM/YYYY")
+    with cf2: 
+        st.write("")
+        ver_todas = st.checkbox("Exibir mês completo (ignora filtro de data)")
 
-            # identifica o usuário logado
-            usuario_atual = (usuario_logado or {}).get('nome', '').strip()
+    df_anotar = df_filtrado[df_filtrado['valor_total'] > 0].copy() if ver_todas else df_filtrado[(df_filtrado['data'].dt.date == dt_anotacao) & (df_filtrado['valor_total'] > 0)].copy()
 
-            colunas_para_exibir = ['Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)', 'Categoria', 'Justificativa']
-            opcoes_categoria = ["", "Absenteísmo", "Quadro de colaboradores", "Cliente", "Operações", "Outros"]
+    if df_anotar.empty:
+        st.info("Nenhuma hora extra registrada para os filtros selecionados.")
+    else:
+        df_edit = df_anotar.copy()
+        df_edit['Data'] = pd.to_datetime(df_edit['data']).dt.strftime('%d/%m/%Y')
+        df_edit['Valor'] = df_edit['valor_total'].apply(format_BRL)
+        df_edit.rename(columns={'nome': 'Colaborador', 'cargo': 'Cargo', 'qtd_he_50%': 'HE 50%', 'qtd_he_100%': 'HE 100%', 'categoria': 'Categoria', 'justificativa': 'Justificativa'}, inplace=True)
+        df_edit.set_index('id_registro_original', inplace=True)
+        
+        st.session_state['df_anotacao_original_indexed'] = df_edit.copy()
+        usr_atual = usuario_logado.get('nome', '').strip()
+        
+        mask_edit = (df_edit['nome_usuario'].fillna('').str.strip() == '') | (df_edit['nome_usuario'].fillna('').str.casefold() == usr_atual.casefold())
+        df_meus = df_edit[mask_edit].copy()
+        df_outros = df_edit[~mask_edit].copy()
+        
+        df_meus['Gestor'] = df_meus['nome_usuario'].apply(lambda x: x.strip() if str(x).strip() else '—')
+        df_outros['Gestor'] = df_outros['nome_usuario'].apply(lambda x: x.strip() if str(x).strip() else '—')
+        
+        st.session_state['df_anotacao_original_indexed_meus'] = df_meus.copy()
+        cols_exib = ['Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor', 'Categoria', 'Justificativa', 'Gestor']
+        ops_cat = ["", "Absenteísmo", "Quadro de colaboradores", "Cliente", "Operações", "Outros"]
 
-            # Máscara do que é editável por este usuário (sem dono OU dono == usuário)
-            dono_atual_series = df_editor_pronto['nome_usuario'].fillna('')
-            mask_editavel = (dono_atual_series.str.strip() == '') | (
-                dono_atual_series.str.casefold() == usuario_atual.casefold()
-            )
+        st.markdown("###### ✏️ Suas Pendências / Linhas Livres")
+        df_editado_meus = st.data_editor(
+            df_meus[cols_exib], use_container_width=True, hide_index=True,
+            column_config={
+                "Categoria": st.column_config.SelectboxColumn("Motivo", options=ops_cat),
+                "Justificativa": st.column_config.TextColumn("Justificativa (Obrigatória)")
+            },
+            disabled=['Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor', 'Gestor']
+        )
 
-            df_meus = df_editor_pronto[mask_editavel].copy()
-            df_outros = df_editor_pronto[~mask_editavel].copy()
+        if not df_outros.empty:
+            st.markdown("###### 🔒 Justificativas de outros Gestores")
+            st.dataframe(df_outros[cols_exib], use_container_width=True, hide_index=True)
 
-            # Coluna informativa para visualização
-            def _fmt_exec(s):
-                s = (s or '').strip()
-                return s if s else '—'
-            df_meus['Executor'] = df_meus['nome_usuario'].apply(_fmt_exec)
-            df_outros['Executor'] = df_outros['nome_usuario'].apply(_fmt_exec)
+        if st.button("✔️ Salvar Anotações", type="primary"):
+            try:
+                df_orig_m = st.session_state['df_anotacao_original_indexed_meus']
+                df_editado_meus.index = df_orig_m.index
+                
+                alt = df_editado_meus[
+                    (df_editado_meus['Categoria'].fillna('') != df_orig_m['Categoria'].fillna('')) |
+                    (df_editado_meus['Justificativa'].fillna('') != df_orig_m['Justificativa'].fillna(''))
+                ]
+                
+                tem_cat = alt['Categoria'].fillna('').str.strip() != ''
+                tem_jus = alt['Justificativa'].fillna('').str.strip() != ''
+                if not alt[tem_cat ^ tem_jus].empty:
+                    st.error("❌ Categoria e Justificativa devem ser preenchidas juntas.")
+                    st.stop()
 
-            colunas_para_exibir_expand = colunas_para_exibir
+                if not alt.empty:
+                    with st.spinner("Salvando..."), engine.begin() as conn:
+                        for id_reg, linha in alt.iterrows():
+                            cat = (linha['Categoria'] or "").strip()
+                            jus = (linha['Justificativa'] or "").strip()
+                            if not cat and not jus:
+                                conn.execute(text("DELETE FROM anotacoes WHERE id_registro_original = :id"), {"id": id_reg})
+                            else:
+                                conn.execute(text("""
+                                    INSERT INTO anotacoes (id_registro_original, nome_usuario, categoria, justificativa) 
+                                    VALUES (:id, :usr, :cat, :jus)
+                                    ON CONFLICT (id_registro_original) DO UPDATE SET 
+                                        categoria = EXCLUDED.categoria, justificativa = EXCLUDED.justificativa,
+                                        nome_usuario = EXCLUDED.nome_usuario, data_modificacao = NOW();
+                                """), {"id": id_reg, "usr": usr_atual, "cat": cat, "jus": jus})
+                    st.success("Anotações salvas com sucesso!")
+                    reset_app_state(engine)
+                else:
+                    st.info("Nenhuma alteração identificada.")
+            except Exception as e: st.error(f"Erro ao salvar: {e}")
 
-            # Guardamos o "original" apenas das linhas editáveis para comparar ao salvar
-            st.session_state['df_anotacao_original_indexed_meus'] = df_meus.copy()
-
-            st.markdown("##### ✏️ Linhas editáveis ou sem justificativas")
-            df_editado_meus = st.data_editor(
-                df_meus[colunas_para_exibir_expand],
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "Categoria": st.column_config.SelectboxColumn("Motivo da Anotação", options=opcoes_categoria),
-                    "Justificativa": st.column_config.TextColumn("Justificativa (Obrigatória)"),
-                    "Executor": st.column_config.TextColumn("Gestor Responsável")
-                },
-                # Bloqueia tudo que não seja os campos de anotação
-                disabled=['Data', 'Colaborador', 'Cargo', 'HE 50%', 'HE 100%', 'Valor Total (R$)'],
-                key="data_editor_anotacoes_meus"
-            )
-
-            st.markdown("##### 🔒 Linhas de outros gestores (somente leitura)")
-            st.data_editor(
-                df_outros[colunas_para_exibir_expand],
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "Categoria": st.column_config.SelectboxColumn("Motivo da Anotação", options=opcoes_categoria),
-                    "Justificativa": st.column_config.TextColumn("Justificativa"),
-                    "Executor": st.column_config.TextColumn("Gestor Responsável")
-                },
-                disabled=True,
-                key="data_editor_anotacoes_outros"
-            )
-
-            if st.button("✔️ Salvar Anotações Editadas", use_container_width=True, type="primary"):
-                try:
-                    # Originais (somente as linhas que este usuário podia editar)
-                    df_original_meus = st.session_state['df_anotacao_original_indexed_meus'].copy()
-                    df_editado_meus = df_editado_meus.copy()
-
-                    # Alinha índices (garantia)
-                    df_editado_meus.index = df_original_meus.index
-
-                    # Diferenças somente nas linhas "minhas"
-                    alteracoes = df_editado_meus[
-                        (df_editado_meus['Categoria'].fillna('') != df_original_meus['Categoria'].fillna('')) |
-                        (df_editado_meus['Justificativa'].fillna('') != df_original_meus['Justificativa'].fillna(''))
-                    ]
-
-                    # ✅ Regra: ou preenche as duas, ou deixa as duas vazias
-                    tem_categoria = alteracoes['Categoria'].fillna('').str.strip() != ''
-                    tem_just = alteracoes['Justificativa'].fillna('').str.strip() != ''
-                    inconsistentes = alteracoes[tem_categoria ^ tem_just]  # XOR
-
-                    if not inconsistentes.empty:
-                        st.error("❌ Erro: Se preencher **Categoria**, também precisa preencher **Justificativa** (e vice-versa).")
-                        st.stop()
-
-                    # 🔒 Blindagem extra: se alguém adulterou o front e tentou mandar id que não é dele,
-                    # filtramos de novo comparando com o DF completo original.
-                    df_original_full = st.session_state['df_anotacao_original_indexed']
-                    donos = df_original_full.loc[alteracoes.index, 'nome_usuario'].fillna('')
-                    permitidas_mask = (donos.str.strip() == '') | (donos.str.casefold() == usuario_atual.casefold())
-                    alteracoes_permitidas = alteracoes[permitidas_mask]
-
-                    # Se houve tentativa de editar o que não podia, avisamos e ignoramos
-                    if len(alteracoes_permitidas) < len(alteracoes):
-                        st.warning("Algumas alterações foram ignoradas por pertencerem a outro executor. 🔒")
-
-                    if not alteracoes_permitidas.empty:
-                        with st.spinner("Salvando alterações..."), engine.begin() as conn:
-                            for id_registro, linha in alteracoes_permitidas.iterrows():
-                                categoria_val = (linha['Categoria'] or "").strip()
-                                justificativa_val = (linha['Justificativa'] or "").strip()
-
-                                if not categoria_val and not justificativa_val:
-                                    # Ambas vazias => apaga a anotação
-                                    query = text("DELETE FROM anotacoes WHERE id_registro_original = :id")
-                                    conn.execute(query, {"id": id_registro})
-                                else:
-                                    # Upsert com nome do executor atual
-                                    query = text("""
-                                        INSERT INTO anotacoes (id_registro_original, nome_usuario, categoria, justificativa) 
-                                        VALUES (:id, :usuario, :categoria, :justificativa)
-                                        ON CONFLICT (id_registro_original) DO UPDATE SET 
-                                            categoria = EXCLUDED.categoria,
-                                            justificativa = EXCLUDED.justificativa,
-                                            nome_usuario = EXCLUDED.nome_usuario,
-                                            data_modificacao = NOW();
-                                    """)
-                                    conn.execute(query, {
-                                        "id": id_registro,
-                                        "usuario": usuario_atual or 'Usuário do Sistema',
-                                        "categoria": categoria_val,
-                                        "justificativa": justificativa_val
-                                    })
-
-                        st.success(f"{len(alteracoes_permitidas)} alterações foram salvas com sucesso!")
-                        reset_app_state(engine)
-                    else:
-                        st.info("Nenhuma alteração válida para salvar.")
-                except Exception as e:
-                    st.error(f"Ocorreu um erro ao salvar as alterações: {e}")
-
-        ### PAINEL DE DIAGNÓSTICOS
-        df_nao_classificados = df_filtrado[df_filtrado['cargo'] == 'Não Classificado'].copy()
-        if not df_nao_classificados.empty:
-
+        # --- DIAGNÓSTICO DE NOMES ---
+        df_nc = df_filtrado[df_filtrado['cargo'] == 'Não Classificado']
+        if not df_nc.empty:
             st.markdown("---")
-            st.markdown('#### 🚨 Painel de Diagnóstico: Colaborador Não Identificado na Aba "OPERAÇÃO"')
-            # Agrupa por nome e filial para maior detalhe
-            resumo_problemas = df_nao_classificados.groupby(['nome', 'filial']).agg(
-                Custo_Total=('valor_total', 'sum'), 
-                Ocorrencias=('nome', 'count')
-            ).reset_index().sort_values(by='Custo_Total', ascending=False)
-            
-            resumo_problemas['Custo_Total'] = resumo_problemas['Custo_Total'].apply(
-                lambda x: f"R$ {x:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
-            )
-
-            resumo_problemas.rename(columns={
-                'nome': 'Colaborador',
-                'filial': 'Filial',
-                'Custo_Total': 'Custo Total Não Classificado',
-                'Ocorrencias': 'Nº de Lançamentos'
-            }, inplace=True)
-            
-            st.write("Resumo dos Nomes com Problemas de Correspondência:")
-            st.dataframe(resumo_problemas, use_container_width=True, hide_index=True)
-
-            # BOTÃO PARA DOWNLOAD .CSV
-            csv_data = converte_df_para_csv(resumo_problemas)
-            st.download_button(
-                label="📥 Baixar dados como CSV",
-                data=csv_data,
-                file_name=f"relatorio_nomes_nao_classificados_{date.today().strftime('%d-%m-%Y')}.csv",
-                mime='text/csv',
-            )
+            sec("🚨 Colaboradores Não Mapeados")
+            st.caption("Nomes que realizaram HE mas não foram encontrados na aba OPERACAO do sistema.")
+            res = df_nc.groupby(['nome', 'filial']).agg(Custo=('valor_total','sum'), Ocorrencias=('nome','count')).reset_index()
+            res['Custo'] = res['Custo'].apply(format_BRL)
+            st.dataframe(res.rename(columns={'nome':'Colaborador','filial':'Filial'}), use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# 4. CONTROLE DE FLUXO PRINCIPAL
+# INÍCIO DO APLICATIVO
 # ==============================================================================
-if not get_logged_user():   
+# Injeção CSS para tela de login (Esconde a Sidebar)
+if not get_logged_user():
+    st.markdown("""<style>[data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }</style>""", unsafe_allow_html=True)
+    
     col1, col2, col3 = st.columns([1, 1.5, 1])
     with col2:
-        # Adiciona um espaço no topo para um melhor alinhamento vertical
         st.markdown("<br><br><br>", unsafe_allow_html=True)
-        
-        # Container para criar um efeito de "card" com borda
         with st.container(border=True):
-            st.title("🔐 Autenticação de Usuário")
-            st.markdown("Por favor, insira suas credenciais para acessar o dashboard.")
-            
-            # Formulário de login
+            st.markdown(f"<div style='text-align:center; margin-bottom:20px;'><h2 style='color:{C['deep']};'>🔐 Autenticação</h2><p style='color:{C['muted']};'>Insira as suas credenciais para acessar o painel de RH.</p></div>", unsafe_allow_html=True)
             with st.form("login_form_central"):
-                email = st.text_input("📧 **Email**", key="login_email")
-                senha = st.text_input("🔑 **Senha**", type="password", key="login_senha")
-                
-                st.markdown("<br>", unsafe_allow_html=True) # Espaçador
-                
-                # Botão de submit centralizado e destacado
-                submitted = st.form_submit_button(
-                    "Entrar", 
-                    use_container_width=True, 
-                    type="primary"
-                )
-
-                if submitted:
+                email = st.text_input("📧 **Email**")
+                senha = st.text_input("🔑 **Senha**", type="password")
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.form_submit_button("Acessar Painel", use_container_width=True, type="primary"):
                     user_info = authenticate_user(email, senha)
                     if user_info:
                         st.session_state['user'] = user_info
                         st.rerun()
-                    else:
-                        st.error("Email ou senha inválidos. Por favor, tente novamente.")
-
-        # Rodapé simples
-        st.markdown(
-            """
-            <div style="text-align: center; margin-top: 20px; color: grey;">
-                <p>NT Transportes - Dashboard Recursos Humano © 2025</p>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+                    else: st.error("Email ou senha inválidos.")
 else:
     run_dashboard()
-
-
-
-
