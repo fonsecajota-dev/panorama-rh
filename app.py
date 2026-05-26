@@ -546,7 +546,7 @@ def run_dashboard():
                 
                 #tem_cat = alt['Categoria'].fillna('').str.strip() != ''
                 tem_jus = alt['Justificativa'].fillna('').str.strip() != ''
-                if not alt[tem_cat ^ tem_jus].empty:
+                if not alt[tem_jus].empty:
                     st.error("❌ Motivo e Justificativa devem ser preenchidas juntas.")
                     st.stop()
 
