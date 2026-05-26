@@ -544,10 +544,10 @@ def run_dashboard():
                     (df_editado_meus['Justificativa'].fillna('') != df_orig_m['Justificativa'].fillna(''))
                 ]
                 
-                tem_cat = alt['Categoria'].fillna('').str.strip() != ''
+                #tem_cat = alt['Categoria'].fillna('').str.strip() != ''
                 tem_jus = alt['Justificativa'].fillna('').str.strip() != ''
                 if not alt[tem_cat ^ tem_jus].empty:
-                    st.error("❌ Categoria e Justificativa devem ser preenchidas juntas.")
+                    st.error("❌ Motivo e Justificativa devem ser preenchidas juntas.")
                     st.stop()
 
                 if not alt.empty:
