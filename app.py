@@ -544,12 +544,13 @@ def run_dashboard():
                     (df_editado_meus['Justificativa'].fillna('') != df_orig_m['Justificativa'].fillna(''))
                 ]
                 
-                #tem_cat = alt['Categoria'].fillna('').str.strip() != ''
-                tem_jus = alt['Justificativa'].fillna('').str.strip() != ''
-                #if not alt[tem_cat ^ tem_jus].empty:
-                if not alt[tem_jus].empty:
-                    st.error("❌ Justificativa devem ser preenchidas juntas.")
-                    st.stop()
+                if not alt.empty:
+                    # Linha alterada que tem motivo mas não tem justificativa -> inválida
+                    sem_jus = (alt['Justificativa'].fillna('').str.strip() == '') & \
+                              (alt['Categoria'].fillna('').str.strip() != '')
+                    if not alt[sem_jus].empty:
+                        st.error("❌ Preencha a justificativa para as linhas com motivo selecionado.")
+                        st.stop()
 
                 if not alt.empty:
                     with st.spinner("Salvando..."), engine.begin() as conn:
