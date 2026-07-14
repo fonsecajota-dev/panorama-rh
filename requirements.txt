@@ -7,3 +7,4 @@ bcrypt==4.3.0
 plotly==6.2.0
 psycopg2-binary==2.9.10
 streamlit-plotly-events==0.0.6
+pyarrow==24.0.0
